@@ -172,7 +172,11 @@ export function createWorkshopState(
   const order = CLIENT_ORDERS[orderId];
   const startEmpty = options.startWithEmptyCart ?? true;
   const presetFromOrder: BuildPresetId =
-    orderId === 'kantor_hemat' ? 'hemat' : orderId === 'workstation_pro' ? 'berat' : 'efisien';
+    orderId === 'kantor_hemat'
+      ? 'hemat'
+      : orderId === 'workstation_pro' || orderId === 'ai_dev_rig'
+        ? 'berat'
+        : 'efisien';
   const purchasedModules: Partial<Record<BuyableSlotId, string>> = startEmpty
     ? {}
     : { ...order.recommendedLoadout };
@@ -1270,7 +1274,9 @@ export function runPostCheck(state: AssemblyState): ActionOutcome {
   const idleTempC = getEffectiveIdleTempC(state);
   const ramModeLabel = getRamSummaryLabel(state);
   const isGoldOrBetterPsu = psuSku
-    ? psuSku.psuEfficiencyTier === '80+ Gold' || psuSku.psuEfficiencyTier === '80+ Platinum'
+    ? psuSku.psuEfficiencyTier === '80+ Gold' ||
+      psuSku.psuEfficiencyTier === '80+ Platinum' ||
+      psuSku.psuEfficiencyTier === '80+ Titanium'
     : undefined;
 
   const earnedAchievements = evaluateRunAchievements({

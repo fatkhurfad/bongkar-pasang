@@ -1,18 +1,49 @@
-/* Mesin adegan 3D WebGL (Three.js) prosedural untuk meja anti-statis motherboard dan interior casing ATX */
+/* Mesin adegan 3D WebGL (Three.js) realistis dengan material PBR, model perangkat keras dinamis sesuai modul yang dibeli, panel kaca tempered, aliran udara 3D, dan mode tampilan terurai */
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { BUILD_PRESETS, type PartId, type SlotId } from '../config';
+import { RectAreaLightUniformsLib } from 'three/addons/lights/RectAreaLightUniformsLib.js';
+import { type PartId, type SlotId } from '../config';
 import {
   getActiveHintTarget,
+  getEffectivePartInfo,
+  getPsuCapacityWatts,
+  getPurchasedSku,
   hasPart,
   isPartDamaged,
   type AssemblyState,
   type PostLedKey,
 } from './assemblyEngine';
+import {
+  createDynamicBadgeTexture,
+  createDynamicCpuIhsTexture,
+  createProceduralTexturePack,
+  disposeProceduralTexturePack,
+} from './workbench3dTextures';
 
-export type CameraPresetId = 'isometric' | 'top' | 'detail';
+export type CameraPresetId = 'isometric' | 'top' | 'detail' | 'side';
+export type CaseFinishId = 'carbon' | 'white' | 'titanium';
+export type RgbThemeId = 'blue' | 'cyan' | 'emerald' | 'amber' | 'off';
+export type StudioLightId = 'studio' | 'dark_rgb';
+
+export interface SceneVisualOptions {
+  caseFinish: CaseFinishId;
+  rgbTheme: RgbThemeId;
+  studioLight: StudioLightId;
+  glassPanelClosed: boolean;
+  showAirflow: boolean;
+  explodedAmount: number; // 0.0 - 1.0
+}
+
+export const DEFAULT_SCENE_VISUAL_OPTIONS: SceneVisualOptions = {
+  caseFinish: 'carbon',
+  rgbTheme: 'blue',
+  studioLight: 'studio',
+  glassPanelClosed: false,
+  showAirflow: false,
+  explodedAmount: 0,
+};
 
 export type HitTargetAction =
   | { type: 'slot'; slotId: SlotId; label: string }
@@ -30,6 +61,7 @@ export interface Workbench3DCallbacks {
 
 export interface Workbench3DController {
   syncState: (nextState: AssemblyState) => void;
+  setVisualOptions: (nextOptions: SceneVisualOptions) => void;
   setCameraPreset: (preset: CameraPresetId) => void;
   handleExternalDrop: (clientX: number, clientY: number, partId: PartId) => void;
   dispose: () => void;
@@ -39,6 +71,42 @@ export interface Workbench3DController {
 const _pointer = new THREE.Vector2();
 const _targetPos = new THREE.Vector3();
 const _targetLook = new THREE.Vector3();
+const _tmpObj = new THREE.Object3D();
+
+const RGB_THEME_HEX: Record<RgbThemeId, number> = {
+  blue: 0x3b82f6,
+  cyan: 0x06b6d4,
+  emerald: 0x10b981,
+  amber: 0xf59e0b,
+  off: 0x1e293b,
+};
+
+const CASE_FINISH_COLORS: Record<
+  CaseFinishId,
+  { chassis: number; accent: number; shroud: number; roughness: number; metalness: number }
+> = {
+  carbon: {
+    chassis: 0x141b26,
+    accent: 0x263244,
+    shroud: 0x0f1520,
+    roughness: 0.46,
+    metalness: 0.56,
+  },
+  white: {
+    chassis: 0xe2e8f0,
+    accent: 0xcbd5e1,
+    shroud: 0xdbe3ee,
+    roughness: 0.36,
+    metalness: 0.18,
+  },
+  titanium: {
+    chassis: 0x475569,
+    accent: 0x64748b,
+    shroud: 0x334155,
+    roughness: 0.32,
+    metalness: 0.78,
+  },
+};
 
 function detectSoftwareWebGL(): boolean {
   if (typeof document === 'undefined') return true;
@@ -52,169 +120,62 @@ function detectSoftwareWebGL(): boolean {
   return /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpu);
 }
 
-function createEsdMatTexture(maxAnisotropy: number): THREE.CanvasTexture {
-  const canvas = document.createElement('canvas');
-  canvas.width = 1024;
-  canvas.height = 1024;
-  const ctx = canvas.getContext('2d')!;
-
-  ctx.fillStyle = '#1b2638';
-  ctx.fillRect(0, 0, 1024, 1024);
-
-  // Grid milimeter anti-statis ESD
-  ctx.strokeStyle = '#2b3b54';
-  ctx.lineWidth = 1.5;
-  for (let i = 0; i <= 1024; i += 32) {
-    ctx.beginPath();
-    ctx.moveTo(i, 0);
-    ctx.lineTo(i, 1024);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(0, i);
-    ctx.lineTo(1024, i);
-    ctx.stroke();
-  }
-
-  ctx.strokeStyle = '#3b5173';
-  ctx.lineWidth = 2.5;
-  for (let i = 0; i <= 1024; i += 128) {
-    ctx.beginPath();
-    ctx.moveTo(i, 0);
-    ctx.lineTo(i, 1024);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(0, i);
-    ctx.lineTo(1024, i);
-    ctx.stroke();
-  }
-
-  ctx.fillStyle = '#64748b';
-  ctx.font = '600 22px monospace';
-  ctx.fillText('ESD ANTI-STATIC WORKBENCH · RAKITPC LAB 3D', 44, 56);
-  ctx.fillText('GROUNDED MAT · 1M OHM', 44, 988);
-
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.anisotropy = maxAnisotropy;
-  tex.wrapS = THREE.RepeatWrapping;
-  tex.wrapT = THREE.RepeatWrapping;
-  return tex;
-}
-
-function createMotherboardPcbTexture(maxAnisotropy: number): THREE.CanvasTexture {
-  const canvas = document.createElement('canvas');
-  canvas.width = 1024;
-  canvas.height = 1024;
-  const ctx = canvas.getContext('2d')!;
-
-  ctx.fillStyle = '#0d1526';
-  ctx.fillRect(0, 0, 1024, 1024);
-
-  // Jalur tembaga halus PCB
-  ctx.strokeStyle = '#1b3559';
-  ctx.lineWidth = 3;
-  for (let i = 0; i < 14; i++) {
-    ctx.beginPath();
-    ctx.moveTo(430, 260 + i * 16);
-    ctx.lineTo(590, 260 + i * 16);
-    ctx.stroke();
-  }
-  for (let i = 0; i < 8; i++) {
-    ctx.beginPath();
-    ctx.moveTo(270 + i * 18, 490);
-    ctx.lineTo(270 + i * 18, 610);
-    ctx.lineTo(390 + i * 14, 650);
-    ctx.stroke();
-  }
-
-  // Border PCB & silkscreen teknis
-  ctx.strokeStyle = '#334155';
-  ctx.lineWidth = 6;
-  ctx.strokeRect(14, 14, 996, 996);
-
-  ctx.fillStyle = '#94a3b8';
-  ctx.font = 'bold 26px monospace';
-  ctx.fillText('RAKITPC B760 ATX REV 2.4', 60, 965);
-  ctx.font = '600 20px monospace';
-  ctx.fillText('DDR5 DUAL-CH (A2* / B2*)', 610, 140);
-  ctx.fillText('M.2_1 GEN4 x4', 250, 620);
-  ctx.fillText('PCIe 4.0 x16', 235, 785);
-
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.anisotropy = maxAnisotropy;
-  return tex;
-}
-
-function createLabelTexture(
-  title: string,
-  subtitle: string,
-  bg: string,
-  fg: string,
-  maxAnisotropy: number,
-  triangleCorner = false,
-): THREE.CanvasTexture {
-  const canvas = document.createElement('canvas');
-  canvas.width = 512;
-  canvas.height = 512;
-  const ctx = canvas.getContext('2d')!;
-
-  ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, 512, 512);
-
-  if (triangleCorner) {
-    ctx.fillStyle = '#f59e0b';
-    ctx.beginPath();
-    ctx.moveTo(16, 496);
-    ctx.lineTo(96, 496);
-    ctx.lineTo(16, 416);
-    ctx.closePath();
-    ctx.fill();
-  }
-
-  ctx.fillStyle = fg;
-  ctx.textAlign = 'center';
-  ctx.font = 'bold 56px monospace';
-  ctx.fillText(title, 256, 236);
-  ctx.font = '600 34px monospace';
-  ctx.fillText(subtitle, 256, 300);
-
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.anisotropy = maxAnisotropy;
-  return tex;
-}
-
-function createFanAssembly(radius: number, bladeColor: number, hubColor: number): THREE.Group {
+// Bilah kipas aksial 9-blade berlekuk realistis + cincin frame & LED ring opsional
+function createDetailedFan(
+  radius: number,
+  bladeMat: THREE.Material,
+  hubMat: THREE.Material,
+  ringMat?: THREE.Material,
+): { group: THREE.Group; rotor: THREE.Group } {
+  const group = new THREE.Group();
   const rotor = new THREE.Group();
-  const hubMat = new THREE.MeshStandardMaterial({
-    color: hubColor,
-    roughness: 0.45,
-    metalness: 0.4,
-  });
-  const bladeMat = new THREE.MeshStandardMaterial({
-    color: bladeColor,
-    roughness: 0.38,
-    metalness: 0.25,
-  });
 
-  const hub = new THREE.Mesh(new THREE.CylinderGeometry(radius * 0.3, radius * 0.3, 0.08, 18), hubMat);
+  const hub = new THREE.Mesh(
+    new THREE.CylinderGeometry(radius * 0.28, radius * 0.28, 0.09, 20),
+    hubMat,
+  );
   hub.rotation.x = Math.PI / 2;
   rotor.add(hub);
 
-  const bladeCount = 7;
-  const bladeGeo = new THREE.BoxGeometry(radius * 0.28, radius * 0.68, 0.025);
+  const hubCap = new THREE.Mesh(
+    new THREE.CylinderGeometry(radius * 0.16, radius * 0.16, 0.1, 16),
+    new THREE.MeshStandardMaterial({ color: 0x94a3b8, roughness: 0.25, metalness: 0.85 }),
+  );
+  hubCap.rotation.x = Math.PI / 2;
+  rotor.add(hubCap);
+
+  const bladeCount = 9;
+  const bladeShape = new THREE.Shape();
+  bladeShape.moveTo(0, 0);
+  bladeShape.quadraticCurveTo(radius * 0.24, radius * 0.22, radius * 0.16, radius * 0.68);
+  bladeShape.quadraticCurveTo(radius * 0.02, radius * 0.74, -radius * 0.08, radius * 0.64);
+  bladeShape.quadraticCurveTo(-radius * 0.05, radius * 0.3, 0, 0);
+
+  const bladeGeo = new THREE.ExtrudeGeometry(bladeShape, {
+    depth: 0.018,
+    bevelEnabled: false,
+  });
+  bladeGeo.center();
+
   for (let i = 0; i < bladeCount; i++) {
     const angle = (i / bladeCount) * Math.PI * 2;
     const pivot = new THREE.Group();
     pivot.rotation.z = angle;
     const blade = new THREE.Mesh(bladeGeo, bladeMat);
-    blade.position.y = radius * 0.56;
-    blade.rotation.y = 0.38;
+    blade.position.y = radius * 0.52;
+    blade.rotation.y = 0.42;
+    blade.rotation.x = 0.08;
     pivot.add(blade);
     rotor.add(pivot);
   }
-  return rotor;
+  group.add(rotor);
+
+  if (ringMat) {
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(radius * 0.96, 0.028, 10, 28), ringMat);
+    group.add(ring);
+  }
+
+  return { group, rotor };
 }
 
 function createHighlightFrame(width: number, height: number, depth: number): {
@@ -225,38 +186,232 @@ function createHighlightFrame(width: number, height: number, depth: number): {
   const mat = new THREE.MeshBasicMaterial({
     color: 0x3b82f6,
     transparent: true,
-    opacity: 0.85,
+    opacity: 0.88,
   });
-  const thickness = 0.04;
+  const t = 0.036;
 
-  const topBar = new THREE.Mesh(new THREE.BoxGeometry(width + thickness, thickness, thickness), mat);
+  const topBar = new THREE.Mesh(new THREE.BoxGeometry(width + t, t, t), mat);
   topBar.position.set(0, height / 2, depth / 2);
-  const botBar = new THREE.Mesh(new THREE.BoxGeometry(width + thickness, thickness, thickness), mat);
+  const botBar = new THREE.Mesh(new THREE.BoxGeometry(width + t, t, t), mat);
   botBar.position.set(0, -height / 2, depth / 2);
-  const leftBar = new THREE.Mesh(new THREE.BoxGeometry(thickness, height, thickness), mat);
+  const leftBar = new THREE.Mesh(new THREE.BoxGeometry(t, height, t), mat);
   leftBar.position.set(-width / 2, 0, depth / 2);
-  const rightBar = new THREE.Mesh(new THREE.BoxGeometry(thickness, height, thickness), mat);
+  const rightBar = new THREE.Mesh(new THREE.BoxGeometry(t, height, t), mat);
   rightBar.position.set(width / 2, 0, depth / 2);
 
   group.add(topBar, botBar, leftBar, rightBar);
   return { group, material: mat };
 }
 
+// Bangun model 3D Tower Air Cooler realistis (fins InstancedMesh + bent U-shaped copper heatpipes + fan)
+function buildCoolerVariantGroup(
+  variant: 'stock' | 'tower' | 'dual' | 'aio',
+  mats: {
+    aluminum: THREE.Material;
+    brushedDark: THREE.Material;
+    copper: THREE.Material;
+    plastic: THREE.Material;
+    fanBlade: THREE.Material;
+    rgbMat: THREE.Material;
+  },
+  castShadows: boolean,
+): { group: THREE.Group; rotors: THREE.Group[] } {
+  const group = new THREE.Group();
+  const rotors: THREE.Group[] = [];
+
+  if (variant === 'stock') {
+    // Low-profile radial aluminum downdraft cooler
+    const core = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.24, 0.32, 18), mats.copper);
+    core.position.y = 0.16;
+    group.add(core);
+
+    const finCount = 24;
+    const finGeo = new THREE.BoxGeometry(0.03, 0.28, 0.26);
+    const fins = new THREE.InstancedMesh(finGeo, mats.aluminum, finCount);
+    for (let i = 0; i < finCount; i++) {
+      const a = (i / finCount) * Math.PI * 2;
+      _tmpObj.position.set(Math.cos(a) * 0.34, 0.17, Math.sin(a) * 0.34);
+      _tmpObj.rotation.set(0, -a + Math.PI / 2, 0);
+      _tmpObj.scale.set(1, 1, 1);
+      _tmpObj.updateMatrix();
+      fins.setMatrixAt(i, _tmpObj.matrix);
+    }
+    fins.instanceMatrix.needsUpdate = true;
+    fins.computeBoundingSphere();
+    group.add(fins);
+
+    const shroud = new THREE.Mesh(new THREE.TorusGeometry(0.46, 0.045, 10, 28), mats.plastic);
+    shroud.rotation.x = Math.PI / 2;
+    shroud.position.y = 0.34;
+    group.add(shroud);
+
+    const fan = createDetailedFan(0.41, mats.fanBlade, mats.plastic);
+    fan.group.rotation.x = -Math.PI / 2;
+    fan.group.position.y = 0.36;
+    group.add(fan.group);
+    rotors.push(fan.rotor);
+    return { group, rotors };
+  }
+
+  if (variant === 'aio') {
+    // Liquid Cooler AIO 240 mm: CNC cylindrical pump block + dual infinity RGB rings + copper coldplate
+    const coldplate = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.42, 0.12, 24), mats.copper);
+    coldplate.position.y = 0.06;
+    const pumpBody = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.43, 0.43, 0.36, 28),
+      mats.brushedDark,
+    );
+    pumpBody.position.y = 0.3;
+    pumpBody.castShadow = castShadows;
+    const pumpBezel = new THREE.Mesh(
+      new THREE.TorusGeometry(0.41, 0.025, 10, 28),
+      mats.aluminum,
+    );
+    pumpBezel.rotation.x = Math.PI / 2;
+    pumpBezel.position.y = 0.48;
+    const pumpRingOuter = new THREE.Mesh(
+      new THREE.TorusGeometry(0.32, 0.036, 12, 28),
+      mats.rgbMat,
+    );
+    pumpRingOuter.rotation.x = Math.PI / 2;
+    pumpRingOuter.position.y = 0.485;
+    const pumpRingInner = new THREE.Mesh(
+      new THREE.TorusGeometry(0.17, 0.02, 10, 24),
+      mats.rgbMat,
+    );
+    pumpRingInner.rotation.x = Math.PI / 2;
+    pumpRingInner.position.y = 0.49;
+    const pumpCap = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.28, 0.28, 0.04, 24),
+      new THREE.MeshPhysicalMaterial({
+        color: 0x090d16,
+        roughness: 0.08,
+        metalness: 0.2,
+        clearcoat: 1.0,
+      }),
+    );
+    pumpCap.position.y = 0.475;
+    // Fitting siku selang kanan
+    const fit1 = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.16, 12), mats.brushedDark);
+    fit1.rotation.z = Math.PI / 2;
+    fit1.position.set(0.44, 0.28, -0.09);
+    const fit2 = fit1.clone();
+    fit2.position.set(0.44, 0.28, 0.09);
+
+    // Bracket pengunci 4 sudut
+    const bracketGeo = new THREE.BoxGeometry(0.96, 0.045, 0.12);
+    const b1 = new THREE.Mesh(bracketGeo, mats.aluminum);
+    b1.position.set(0, 0.08, -0.42);
+    const b2 = b1.clone();
+    b2.position.set(0, 0.08, 0.42);
+
+    group.add(
+      coldplate,
+      pumpBody,
+      pumpBezel,
+      pumpRingOuter,
+      pumpRingInner,
+      pumpCap,
+      fit1,
+      fit2,
+      b1,
+      b2,
+    );
+    return { group, rotors };
+  }
+
+  const isDual = variant === 'dual';
+  // Coldplate tembaga + blok mounting aluminium
+  const coldplate = new THREE.Mesh(new THREE.BoxGeometry(0.76, 0.1, 0.76), mats.copper);
+  coldplate.position.y = 0.05;
+  const clamp = new THREE.Mesh(new THREE.BoxGeometry(0.88, 0.11, 0.84), mats.brushedDark);
+  clamp.position.y = 0.15;
+  group.add(coldplate, clamp);
+
+  // Sirip aluminium tipis (InstancedMesh)
+  const stackOffsets = isDual ? [-0.31, 0.31] : [0];
+  const finDepth = isDual ? 0.46 : 0.72;
+  const finCountPerStack = 14;
+  const finGeo = new THREE.BoxGeometry(1.08, 0.022, finDepth);
+  const finInst = new THREE.InstancedMesh(
+    finGeo,
+    mats.aluminum,
+    finCountPerStack * stackOffsets.length,
+  );
+  let idx = 0;
+  for (const sz of stackOffsets) {
+    for (let i = 0; i < finCountPerStack; i++) {
+      _tmpObj.position.set(0, 0.28 + i * 0.068, sz);
+      _tmpObj.rotation.set(0, 0, 0);
+      _tmpObj.scale.set(1, 1, 1);
+      _tmpObj.updateMatrix();
+      finInst.setMatrixAt(idx++, _tmpObj.matrix);
+    }
+  }
+  finInst.instanceMatrix.needsUpdate = true;
+  finInst.computeBoundingSphere();
+  finInst.castShadow = castShadows;
+  group.add(finInst);
+
+  // Top cover plate anodized hitam/titanium + ujung heatpipe tembaga
+  for (const sz of stackOffsets) {
+    const cap = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.055, finDepth + 0.03), mats.brushedDark);
+    cap.position.set(0, 1.24, sz);
+    cap.castShadow = castShadows;
+    group.add(cap);
+  }
+
+  // Heatpipe tembaga berbentuk U (TubeGeometry) keluar dari coldplate menembus sirip
+  const pipeXs = isDual ? [-0.42, -0.25, -0.08, 0.08, 0.25, 0.42] : [-0.34, -0.11, 0.11, 0.34];
+  for (const px of pipeXs) {
+    const zSpan = isDual ? 0.31 : 0.18;
+    const curve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(px, 1.29, -zSpan),
+      new THREE.Vector3(px, 0.42, -zSpan),
+      new THREE.Vector3(px * 0.72, 0.08, 0),
+      new THREE.Vector3(px, 0.42, zSpan),
+      new THREE.Vector3(px, 1.29, zSpan),
+    ]);
+    const pipeMesh = new THREE.Mesh(
+      new THREE.TubeGeometry(curve, 18, 0.034, 8, false),
+      mats.copper,
+    );
+    group.add(pipeMesh);
+  }
+
+  // Kipas PWM 120 mm (1 pada Tower, 2 push-pull pada Dual-Tower)
+  const fanZPositions = isDual ? [0.02, 0.62] : [0.46];
+  for (const fz of fanZPositions) {
+    const frame = new THREE.Mesh(new THREE.BoxGeometry(1.02, 1.02, 0.16), mats.plastic);
+    frame.position.set(0, 0.74, fz);
+    group.add(frame);
+
+    const fan = createDetailedFan(0.45, mats.fanBlade, mats.plastic, isDual ? mats.rgbMat : undefined);
+    fan.group.position.set(0, 0.74, fz + 0.085);
+    group.add(fan.group);
+    rotors.push(fan.rotor);
+  }
+
+  return { group, rotors };
+}
+
 export function createWorkbench3DController(
   container: HTMLElement,
   initialState: AssemblyState,
   callbacksRef: { current: Workbench3DCallbacks },
+  initialVisualOptions: SceneVisualOptions = DEFAULT_SCENE_VISUAL_OPTIONS,
 ): Workbench3DController {
   const isSoftwareGl = detectSoftwareWebGL();
   let currentState = initialState;
+  let visualOpts: SceneVisualOptions = { ...initialVisualOptions };
 
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x0f172a);
-  scene.fog = new THREE.Fog(0x0f172a, 15, 30);
+  scene.background = new THREE.Color(0x0c1322);
+  scene.fog = new THREE.FogExp2(0x0c1322, 0.026);
 
   const width = Math.max(container.clientWidth, 320);
   const height = Math.max(container.clientHeight, 240);
-  const camera = new THREE.PerspectiveCamera(40, width / height, 0.1, 60);
+  const camera = new THREE.PerspectiveCamera(38, width / height, 0.1, 70);
 
   const renderer = new THREE.WebGLRenderer({
     antialias: !isSoftwareGl,
@@ -264,7 +419,7 @@ export function createWorkbench3DController(
   });
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.1;
+  renderer.toneMappingExposure = 1.12;
   renderer.setPixelRatio(isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2));
   renderer.setSize(width, height, false);
   renderer.shadowMap.enabled = !isSoftwareGl;
@@ -275,130 +430,250 @@ export function createWorkbench3DController(
   container.appendChild(renderer.domElement);
 
   const maxAniso = renderer.capabilities.getMaxAnisotropy();
+  const texPack = createProceduralTexturePack(maxAniso);
+  const dynamicTextures: THREE.Texture[] = [];
 
-  // Studio Environment Map (RoomEnvironment) pada semua perangkat
+  // Studio Environment Reflection (RoomEnvironment) pada semua perangkat
   const pmremGenerator = new THREE.PMREMGenerator(renderer);
   const envTex = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
   scene.environment = envTex;
   pmremGenerator.dispose();
 
-  // Pencahayaan studio 3-titik: Key hangat + Hemisphere sejuk + Rim belakang
-  const hemiLight = new THREE.HemisphereLight(0xdbeafe, 0x1e293b, 0.95);
+  // Pencahayaan Studio PBR 3-titik + Softbox (GPU) + Interior RGB PointLight
+  const hemiLight = new THREE.HemisphereLight(0xdbeafe, 0x1e293b, 0.92);
   scene.add(hemiLight);
 
-  const keyLight = new THREE.DirectionalLight(0xfff6e8, 1.85);
-  keyLight.position.set(5.5, 9.5, 6.2);
+  const keyLight = new THREE.DirectionalLight(0xfff5e4, 1.95);
+  keyLight.position.set(5.8, 10.2, 6.4);
   if (!isSoftwareGl) {
     keyLight.castShadow = true;
-    keyLight.shadow.mapSize.set(1024, 1024);
-    keyLight.shadow.camera.left = -6.5;
-    keyLight.shadow.camera.right = 6.5;
-    keyLight.shadow.camera.top = 6.5;
-    keyLight.shadow.camera.bottom = -6.5;
+    keyLight.shadow.mapSize.set(2048, 2048);
+    keyLight.shadow.camera.left = -7.2;
+    keyLight.shadow.camera.right = 7.2;
+    keyLight.shadow.camera.top = 7.2;
+    keyLight.shadow.camera.bottom = -7.2;
     keyLight.shadow.camera.near = 1;
-    keyLight.shadow.camera.far = 24;
-    keyLight.shadow.bias = -0.0005;
+    keyLight.shadow.camera.far = 26;
+    keyLight.shadow.bias = -0.0004;
     keyLight.shadow.normalBias = 0.02;
   }
   scene.add(keyLight);
 
-  const rimLight = new THREE.DirectionalLight(0x93c5fd, 0.72);
-  rimLight.position.set(-6.0, 5.2, -5.5);
+  const rimLight = new THREE.DirectionalLight(0x7dd3fc, 0.8);
+  rimLight.position.set(-6.5, 5.5, -5.8);
   scene.add(rimLight);
+
+  // Softbox studio elongated specular highlight pada GPU asli
+  if (!isSoftwareGl) {
+    RectAreaLightUniformsLib.init();
+    const overheadSoftbox = new THREE.RectAreaLight(0xeef6ff, 2.4, 7.5, 3.2);
+    overheadSoftbox.position.set(0, 7.8, 2.2);
+    overheadSoftbox.lookAt(0, 1.2, 0);
+    scene.add(overheadSoftbox);
+  }
+
+  // Lampu aksen RGB interior casing (menyala saat PC hidup / dark RGB mode)
+  const caseRgbLight = new THREE.PointLight(0x3b82f6, 0, 9.5, 1.8);
+  caseRgbLight.position.set(0.2, 2.8, 0.7);
+  scene.add(caseRgbLight);
 
   // OrbitControls
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = !isSoftwareGl;
   controls.dampingFactor = 0.08;
-  controls.minDistance = 3.2;
-  controls.maxDistance = 14.5;
-  controls.maxPolarAngle = Math.PI * 0.485;
+  controls.minDistance = 3.0;
+  controls.maxDistance = 15.5;
+  controls.maxPolarAngle = Math.PI * 0.49;
   controls.enablePan = false;
 
-  // Meja ESD dasar (y = 0)
-  const esdTex = createEsdMatTexture(maxAniso);
-  const tableGeo = new THREE.BoxGeometry(16, 0.3, 12);
-  const tableMat = new THREE.MeshStandardMaterial({
-    map: esdTex,
-    roughness: 0.78,
-    metalness: 0.06,
-  });
-  const tableMesh = new THREE.Mesh(tableGeo, tableMat);
-  tableMesh.position.set(0, -0.15, 0);
-  tableMesh.receiveShadow = !isSoftwareGl;
-  scene.add(tableMesh);
+  // =========================================================================
+  // MEJA BENGKEL TEKNISI + MATRAS ESD + PROPS BAUT & OBENG
+  // =========================================================================
+  const workshopDesk = new THREE.Mesh(
+    new THREE.BoxGeometry(24, 0.4, 18),
+    new THREE.MeshStandardMaterial({
+      map: texPack.deskWoodAlbedo,
+      roughness: 0.82,
+      metalness: 0.08,
+    }),
+  );
+  workshopDesk.position.set(0, -0.22, 0);
+  workshopDesk.receiveShadow = !isSoftwareGl;
+  scene.add(workshopDesk);
 
-  // Soft contact grounding shadow di atas meja (offset +0.01 agar bebas z-fighting)
-  const shadowCanvas = document.createElement('canvas');
-  shadowCanvas.width = 256;
-  shadowCanvas.height = 256;
-  const sCtx = shadowCanvas.getContext('2d')!;
-  const grad = sCtx.createRadialGradient(128, 128, 22, 128, 128, 124);
-  grad.addColorStop(0, 'rgba(2, 6, 23, 0.55)');
-  grad.addColorStop(1, 'rgba(2, 6, 23, 0)');
-  sCtx.fillStyle = grad;
-  sCtx.fillRect(0, 0, 256, 256);
-  const contactTex = new THREE.CanvasTexture(shadowCanvas);
+  // Matras Anti-Statis ESD di atas meja kerja
+  const esdMatMesh = new THREE.Mesh(
+    new THREE.BoxGeometry(11.4, 0.05, 8.2),
+    new THREE.MeshStandardMaterial({
+      map: texPack.esdAlbedo,
+      bumpMap: texPack.esdBump,
+      bumpScale: 0.012,
+      roughness: 0.76,
+      metalness: 0.05,
+    }),
+  );
+  esdMatMesh.position.set(0, 0.005, 0);
+  esdMatMesh.receiveShadow = !isSoftwareGl;
+  scene.add(esdMatMesh);
+
+  // Soft contact grounding shadow (offset +0.032 agar bebas z-fighting)
   const contactPlane = new THREE.Mesh(
-    new THREE.PlaneGeometry(7.2, 6.2),
+    new THREE.PlaneGeometry(7.6, 6.4),
     new THREE.MeshBasicMaterial({
-      map: contactTex,
+      map: texPack.contactShadow,
       transparent: true,
       depthWrite: false,
-      opacity: 0.75,
+      opacity: 0.82,
     }),
   );
   contactPlane.rotation.x = -Math.PI / 2;
-  contactPlane.position.y = 0.01;
+  contactPlane.position.y = 0.032;
   scene.add(contactPlane);
 
-  // Material bersama (variasi roughness >= 0.25 antar logam & plastik)
-  const pcbTex = createMotherboardPcbTexture(maxAniso);
+  // Material PBR Bersama (variasi roughness & metalness nyata antar logam, PCB, dan plastik)
   const pcbMat = new THREE.MeshStandardMaterial({
-    map: pcbTex,
-    roughness: 0.74,
-    metalness: 0.08,
+    map: texPack.pcbAlbedo,
+    bumpMap: texPack.pcbBump,
+    bumpScale: 0.015,
+    roughness: 0.62,
+    metalness: 0.14,
   });
-  const aluminumMat = new THREE.MeshStandardMaterial({
-    color: 0x94a3b8,
-    roughness: 0.24,
-    metalness: 0.86,
+  const aluminumMat = new THREE.MeshPhysicalMaterial({
+    color: 0xb8c4d4,
+    bumpMap: texPack.brushedMetalBump,
+    bumpScale: 0.006,
+    roughness: 0.22,
+    metalness: 0.9,
+    clearcoat: 0.2,
   });
-  const darkMetalMat = new THREE.MeshStandardMaterial({
-    color: 0x334155,
-    roughness: 0.42,
-    metalness: 0.68,
+  const brushedDarkMetalMat = new THREE.MeshPhysicalMaterial({
+    color: 0x263142,
+    bumpMap: texPack.brushedMetalBump,
+    bumpScale: 0.008,
+    roughness: 0.34,
+    metalness: 0.82,
+    clearcoat: 0.25,
   });
-  const copperMat = new THREE.MeshStandardMaterial({
+  const copperMat = new THREE.MeshPhysicalMaterial({
     color: 0xd97706,
+    roughness: 0.2,
+    metalness: 0.94,
+    clearcoat: 0.15,
+  });
+  const goldMat = new THREE.MeshPhysicalMaterial({
+    color: 0xfacc15,
     roughness: 0.22,
     metalness: 0.92,
   });
-  const goldMat = new THREE.MeshStandardMaterial({
-    color: 0xeab308,
-    roughness: 0.25,
-    metalness: 0.88,
-  });
   const darkPlasticMat = new THREE.MeshStandardMaterial({
-    color: 0x1e293b,
+    color: 0x161f2e,
     roughness: 0.72,
-    metalness: 0.08,
+    metalness: 0.06,
   });
-  const ramBlueMat = new THREE.MeshStandardMaterial({
+  const fanBladeMat = new THREE.MeshStandardMaterial({
+    color: 0x334155,
+    roughness: 0.36,
+    metalness: 0.22,
+  });
+  const ramHeatspreaderMat = new THREE.MeshPhysicalMaterial({
     color: 0x1d4ed8,
-    roughness: 0.34,
-    metalness: 0.62,
+    bumpMap: texPack.brushedMetalBump,
+    bumpScale: 0.005,
+    roughness: 0.28,
+    metalness: 0.72,
+    clearcoat: 0.3,
   });
-  const steelChassisMat = new THREE.MeshStandardMaterial({
-    color: 0x182234,
-    roughness: 0.58,
-    metalness: 0.44,
+  const rgbEmissiveMat = new THREE.MeshStandardMaterial({
+    color: 0x3b82f6,
+    emissive: 0x3b82f6,
+    emissiveIntensity: 0.9,
+    roughness: 0.22,
+    metalness: 0.1,
+  });
+  const caseChassisMat = new THREE.MeshStandardMaterial({
+    color: CASE_FINISH_COLORS.carbon.chassis,
+    roughness: CASE_FINISH_COLORS.carbon.roughness,
+    metalness: CASE_FINISH_COLORS.carbon.metalness,
+  });
+  const caseShroudMat = new THREE.MeshStandardMaterial({
+    color: CASE_FINISH_COLORS.carbon.shroud,
+    roughness: 0.56,
+    metalness: 0.42,
   });
   const psuSteelMat = new THREE.MeshStandardMaterial({
     color: 0x0f172a,
-    roughness: 0.55,
-    metalness: 0.52,
+    bumpMap: texPack.brushedMetalBump,
+    bumpScale: 0.004,
+    roughness: 0.44,
+    metalness: 0.62,
   });
+  const ventMeshMat = new THREE.MeshStandardMaterial({
+    map: texPack.honeycombVentAlbedo,
+    roughness: 0.62,
+    metalness: 0.48,
+  });
+
+  // Props Bengkel Realistis di pinggir matras ESD (Baki magnet baut M3 + Obeng presisi + Kancing grounding ESD)
+  const propsGroup = new THREE.Group();
+  scene.add(propsGroup);
+
+  // Baki magnet baut bundar stainless steel + 12 baut M3 (InstancedMesh)
+  const screwTrayRim = new THREE.Mesh(
+    new THREE.TorusGeometry(0.46, 0.045, 10, 28),
+    aluminumMat,
+  );
+  screwTrayRim.rotation.x = Math.PI / 2;
+  screwTrayRim.position.set(3.85, 0.075, 2.25);
+  const screwTrayBottom = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.45, 0.42, 0.04, 24),
+    brushedDarkMetalMat,
+  );
+  screwTrayBottom.position.set(3.85, 0.05, 2.25);
+  propsGroup.add(screwTrayRim, screwTrayBottom);
+
+  const screwInst = new THREE.InstancedMesh(
+    new THREE.CylinderGeometry(0.032, 0.018, 0.08, 8),
+    aluminumMat,
+    12,
+  );
+  for (let i = 0; i < 12; i++) {
+    const a = i * 2.1;
+    const r = 0.08 + ((i * 7) % 10) * 0.026;
+    _tmpObj.position.set(3.85 + Math.cos(a) * r, 0.085, 2.25 + Math.sin(a) * r);
+    _tmpObj.rotation.set(Math.PI / 2, a, 0.25);
+    _tmpObj.scale.set(1, 1, 1);
+    _tmpObj.updateMatrix();
+    screwInst.setMatrixAt(i, _tmpObj.matrix);
+  }
+  screwInst.instanceMatrix.needsUpdate = true;
+  screwInst.computeBoundingSphere();
+  propsGroup.add(screwInst);
+
+  // Obeng presisi Phillips di kanan matras
+  const screwdriverGroup = new THREE.Group();
+  screwdriverGroup.position.set(4.1, 0.11, -0.8);
+  screwdriverGroup.rotation.y = 0.28;
+  const sdHandle = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.085, 0.072, 0.85, 12),
+    new THREE.MeshStandardMaterial({ color: 0x1d4ed8, roughness: 0.62, metalness: 0.1 }),
+  );
+  sdHandle.rotation.x = Math.PI / 2;
+  const sdGrip = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.09, 0.09, 0.32, 12),
+    darkPlasticMat,
+  );
+  sdGrip.rotation.x = Math.PI / 2;
+  sdGrip.position.z = 0.1;
+  const sdShaft = new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.02, 1.15, 10), aluminumMat);
+  sdShaft.rotation.x = Math.PI / 2;
+  sdShaft.position.z = -0.95;
+  screwdriverGroup.add(sdHandle, sdGrip, sdShaft);
+  propsGroup.add(screwdriverGroup);
+
+  // Kancing & kabel koil grounding ESD di pojok kanan atas matras
+  const esdSnap = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.12, 0.06, 16), goldMat);
+  esdSnap.position.set(4.85, 0.06, -3.2);
+  propsGroup.add(esdSnap);
 
   // Daftar proxy raycast per fase & highlight ring
   const benchHitboxes: THREE.Mesh[] = [];
@@ -443,23 +718,25 @@ export function createWorkbench3DController(
   };
 
   // =========================================================================
-  // FASE 1: MEJA ANTI-STATIS & MOTHERBOARD B760 ATX (benchGroup)
+  // FASE 1: MEJA ANTI-STATIS & MOTHERBOARD B760 ATX REALISTIS (benchGroup)
   // =========================================================================
   const benchGroup = new THREE.Group();
   scene.add(benchGroup);
 
   // 9 Standoff kuningan (InstancedMesh)
-  const standoffGeo = new THREE.CylinderGeometry(0.08, 0.08, 0.14, 10);
-  const standoffInst = new THREE.InstancedMesh(standoffGeo, copperMat, 9);
-  const standoffXs = [-2.05, 0, 2.05];
-  const standoffZs = [-1.65, 0, 1.65];
-  const dummy = new THREE.Object3D();
+  const standoffInst = new THREE.InstancedMesh(
+    new THREE.CylinderGeometry(0.075, 0.075, 0.16, 12),
+    copperMat,
+    9,
+  );
   let sIdx = 0;
-  for (const sx of standoffXs) {
-    for (const sz of standoffZs) {
-      dummy.position.set(sx, 0.07, sz);
-      dummy.updateMatrix();
-      standoffInst.setMatrixAt(sIdx++, dummy.matrix);
+  for (const sx of [-2.05, 0, 2.05]) {
+    for (const sz of [-1.65, 0, 1.65]) {
+      _tmpObj.position.set(sx, 0.1, sz);
+      _tmpObj.rotation.set(0, 0, 0);
+      _tmpObj.scale.set(1, 1, 1);
+      _tmpObj.updateMatrix();
+      standoffInst.setMatrixAt(sIdx++, _tmpObj.matrix);
     }
   }
   standoffInst.instanceMatrix.needsUpdate = true;
@@ -467,215 +744,301 @@ export function createWorkbench3DController(
   benchGroup.add(standoffInst);
 
   // Papan PCB Motherboard B760 ATX
-  const moboBaseY = 0.18;
-  const moboBoard = new THREE.Mesh(new THREE.BoxGeometry(4.6, 0.1, 3.8), pcbMat);
+  const moboBaseY = 0.21;
+  const moboBoard = new THREE.Mesh(new THREE.BoxGeometry(4.65, 0.095, 3.85), pcbMat);
   moboBoard.position.set(0, moboBaseY, 0);
   moboBoard.castShadow = !isSoftwareGl;
   moboBoard.receiveShadow = !isSoftwareGl;
   benchGroup.add(moboBoard);
 
-  // Penutup Rear I/O aluminium kiri atas
-  const ioShroud = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.52, 1.55), darkMetalMat);
-  ioShroud.position.set(-1.95, moboBaseY + 0.31, -0.82);
+  // Rear I/O Armor + Port Cluster (USB, RJ45, HDMI, Audio Jacks)
+  const ioShroud = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.54, 1.6), brushedDarkMetalMat);
+  ioShroud.position.set(-1.98, moboBaseY + 0.32, -0.84);
   ioShroud.castShadow = !isSoftwareGl;
-  benchGroup.add(ioShroud);
+  const ioAccentStrip = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 1.48), aluminumMat);
+  ioAccentStrip.position.set(-1.72, moboBaseY + 0.58, -0.84);
+  benchGroup.add(ioShroud, ioAccentStrip);
 
-  // Heatsink VRM atas & kiri CPU (komposit sirip aluminium)
-  const vrmTop = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.34, 0.36), aluminumMat);
-  vrmTop.position.set(-0.62, moboBaseY + 0.22, -1.48);
-  vrmTop.castShadow = !isSoftwareGl;
-  benchGroup.add(vrmTop);
+  // Port USB biru & merah di sisi kiri Rear I/O
+  const usbBlueMat = new THREE.MeshStandardMaterial({ color: 0x2563eb, roughness: 0.4, metalness: 0.2 });
+  const usbRedMat = new THREE.MeshStandardMaterial({ color: 0xdc2626, roughness: 0.4, metalness: 0.2 });
+  [-1.35, -1.05, -0.75, -0.45].forEach((uz, idx) => {
+    const portHousing = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.24, 0.22), aluminumMat);
+    portHousing.position.set(-2.26, moboBaseY + 0.24, uz);
+    const tongue = new THREE.Mesh(
+      new THREE.BoxGeometry(0.06, 0.14, 0.14),
+      idx === 3 ? usbRedMat : usbBlueMat,
+    );
+    tongue.position.set(-2.31, moboBaseY + 0.24, uz);
+    benchGroup.add(portHousing, tongue);
+  });
 
-  const vrmLeft = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.34, 1.15), aluminumMat);
-  vrmLeft.position.set(-1.45, moboBaseY + 0.22, -0.58);
-  vrmLeft.castShadow = !isSoftwareGl;
-  benchGroup.add(vrmLeft);
+  // Heatsink VRM atas & kiri (sirip beralur aluminium)
+  const vrmTopBase = new THREE.Mesh(new THREE.BoxGeometry(1.56, 0.36, 0.4), brushedDarkMetalMat);
+  vrmTopBase.position.set(-0.62, moboBaseY + 0.23, -1.5);
+  vrmTopBase.castShadow = !isSoftwareGl;
+  const vrmTopTrim = new THREE.Mesh(new THREE.BoxGeometry(1.52, 0.06, 0.14), aluminumMat);
+  vrmTopTrim.position.set(-0.62, moboBaseY + 0.42, -1.44);
+  benchGroup.add(vrmTopBase, vrmTopTrim);
 
-  // Header EPS 8-Pin & ATX 24-Pin referensi
-  const benchEps = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.22, 0.22), darkPlasticMat);
-  benchEps.position.set(-1.55, moboBaseY + 0.16, -1.65);
-  benchGroup.add(benchEps);
+  const vrmLeftBase = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.38, 1.2), brushedDarkMetalMat);
+  vrmLeftBase.position.set(-1.46, moboBaseY + 0.24, -0.58);
+  vrmLeftBase.castShadow = !isSoftwareGl;
+  const vrmLeftTrim = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.06, 1.12), aluminumMat);
+  vrmLeftTrim.position.set(-1.42, moboBaseY + 0.44, -0.58);
+  benchGroup.add(vrmLeftBase, vrmLeftTrim);
 
-  const benchAtx24 = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.24, 1.1), darkPlasticMat);
-  benchAtx24.position.set(2.05, moboBaseY + 0.17, -0.5);
-  benchGroup.add(benchAtx24);
-
-  // SOKET CPU LGA1700 + Tuas Logam Berengsel (latchPivot)
-  const cpuCenterX = -0.62;
-  const cpuCenterZ = -0.55;
-  const socketFrame = new THREE.Mesh(new THREE.BoxGeometry(1.12, 0.08, 1.12), darkMetalMat);
-  socketFrame.position.set(cpuCenterX, moboBaseY + 0.09, cpuCenterZ);
-  benchGroup.add(socketFrame);
-
-  const pinPlate = new THREE.Mesh(new THREE.BoxGeometry(0.86, 0.03, 0.86), goldMat);
-  pinPlate.position.set(cpuCenterX, moboBaseY + 0.135, cpuCenterZ);
-  benchGroup.add(pinPlate);
-
-  // Tanda segitiga emas Pin 1 pada pojok kiri bawah soket
-  const socketMarker = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.04, 3), goldMat);
-  socketMarker.position.set(cpuCenterX - 0.45, moboBaseY + 0.15, cpuCenterZ + 0.45);
-  socketMarker.rotation.y = Math.PI / 4;
-  benchGroup.add(socketMarker);
-
-  // Engsel tutup pengunci logam (ILM) soket
-  const latchPivot = new THREE.Group();
-  latchPivot.position.set(cpuCenterX, moboBaseY + 0.15, cpuCenterZ - 0.56);
-  benchGroup.add(latchPivot);
-
-  const ilmBarTop = new THREE.Mesh(new THREE.BoxGeometry(1.02, 0.05, 0.1), aluminumMat);
-  ilmBarTop.position.set(0, 0.03, 0.05);
-  const ilmBarBot = new THREE.Mesh(new THREE.BoxGeometry(1.02, 0.05, 0.1), aluminumMat);
-  ilmBarBot.position.set(0, 0.03, 1.07);
-  const ilmBarLeft = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.05, 1.02), aluminumMat);
-  ilmBarLeft.position.set(-0.46, 0.03, 0.56);
-  const ilmBarRight = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.05, 1.02), aluminumMat);
-  ilmBarRight.position.set(0.46, 0.03, 0.56);
-  const leverArm = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 1.05, 8), aluminumMat);
-  leverArm.rotation.x = Math.PI / 2;
-  leverArm.position.set(0.62, 0.05, 0.56);
-  const leverKnob = new THREE.Mesh(
-    new THREE.SphereGeometry(0.065, 12, 12),
-    new THREE.MeshStandardMaterial({ color: 0x38bdf8, roughness: 0.35, metalness: 0.3 }),
+  // 12 Ferrite VRM Chokes + 14 Solid Capacitors (InstancedMesh — detail teknis papan induk!)
+  const chokeInst = new THREE.InstancedMesh(
+    new THREE.BoxGeometry(0.13, 0.12, 0.13),
+    brushedDarkMetalMat,
+    12,
   );
-  leverKnob.position.set(0.62, 0.05, 1.08);
-  latchPivot.add(ilmBarTop, ilmBarBot, ilmBarLeft, ilmBarRight, leverArm, leverKnob);
+  const capInst = new THREE.InstancedMesh(
+    new THREE.CylinderGeometry(0.05, 0.05, 0.15, 10),
+    aluminumMat,
+    14,
+  );
+  for (let i = 0; i < 7; i++) {
+    _tmpObj.position.set(-1.18 + i * 0.19, moboBaseY + 0.11, -1.2);
+    _tmpObj.rotation.set(0, 0, 0);
+    _tmpObj.scale.set(1, 1, 1);
+    _tmpObj.updateMatrix();
+    chokeInst.setMatrixAt(i, _tmpObj.matrix);
 
-  // Komposit 3D CPU (Substrate + IHS Nickel + Label + Segitiga Emas)
-  const cpuGroup = new THREE.Group();
-  cpuGroup.position.set(cpuCenterX, moboBaseY + 0.16, cpuCenterZ);
-  const cpuSub = new THREE.Mesh(
-    new THREE.BoxGeometry(0.84, 0.04, 0.84),
-    new THREE.MeshStandardMaterial({ color: 0x15803d, roughness: 0.55, metalness: 0.15 }),
-  );
-  const presetInit = BUILD_PRESETS[initialState.buildPreset];
-  const cpuLabelTex = createLabelTexture(
-    presetInit.cpuShortCode,
-    'LGA1700',
-    '#cbd5e1',
-    '#0f172a',
-    maxAniso,
-    true,
-  );
-  const cpuIhs = new THREE.Mesh(
-    new THREE.BoxGeometry(0.7, 0.06, 0.7),
+    _tmpObj.position.set(-1.18 + i * 0.19, moboBaseY + 0.12, -1.04);
+    _tmpObj.updateMatrix();
+    capInst.setMatrixAt(i, _tmpObj.matrix);
+  }
+  for (let i = 0; i < 5; i++) {
+    _tmpObj.position.set(-1.18, moboBaseY + 0.11, -0.92 + i * 0.19);
+    _tmpObj.updateMatrix();
+    chokeInst.setMatrixAt(7 + i, _tmpObj.matrix);
+  }
+  for (let i = 0; i < 7; i++) {
+    _tmpObj.position.set(-1.95, moboBaseY + 0.12, 0.4 + i * 0.18);
+    _tmpObj.updateMatrix();
+    capInst.setMatrixAt(7 + i, _tmpObj.matrix);
+  }
+  chokeInst.instanceMatrix.needsUpdate = true;
+  chokeInst.computeBoundingSphere();
+  capInst.instanceMatrix.needsUpdate = true;
+  capInst.computeBoundingSphere();
+  benchGroup.add(chokeInst, capInst);
+
+  // Header EPS 8-Pin & ATX 24-Pin
+  const benchEps = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.24, 0.22), darkPlasticMat);
+  benchEps.position.set(-1.55, moboBaseY + 0.17, -1.68);
+  const benchAtx24 = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.26, 1.14), darkPlasticMat);
+  benchAtx24.position.set(2.08, moboBaseY + 0.18, -0.48);
+  benchGroup.add(benchEps, benchAtx24);
+
+  // SOKET CPU LGA1700 + Kisi Pin Emas + Tuas Stainless Berengsel
+  const cpuCenterX = -0.58;
+  const cpuCenterZ = -0.52;
+  const socketHousing = new THREE.Mesh(new THREE.BoxGeometry(1.14, 0.085, 1.16), brushedDarkMetalMat);
+  socketHousing.position.set(cpuCenterX, moboBaseY + 0.09, cpuCenterZ);
+  const pinGridPlate = new THREE.Mesh(
+    new THREE.BoxGeometry(0.86, 0.032, 0.9),
     new THREE.MeshStandardMaterial({
-      map: cpuLabelTex,
-      roughness: 0.22,
-      metalness: 0.85,
+      map: texPack.lgaPinsAlbedo,
+      roughness: 0.3,
+      metalness: 0.84,
     }),
   );
-  cpuIhs.position.y = 0.05;
+  pinGridPlate.position.set(cpuCenterX, moboBaseY + 0.14, cpuCenterZ);
+  const socketPin1Marker = new THREE.Mesh(new THREE.ConeGeometry(0.075, 0.04, 3), goldMat);
+  socketPin1Marker.position.set(cpuCenterX - 0.45, moboBaseY + 0.155, cpuCenterZ + 0.46);
+  socketPin1Marker.rotation.y = Math.PI / 4;
+  benchGroup.add(socketHousing, pinGridPlate, socketPin1Marker);
+
+  // Engsel rangka ILM & tuas beban stainless LGA1700
+  const latchPivot = new THREE.Group();
+  latchPivot.position.set(cpuCenterX, moboBaseY + 0.155, cpuCenterZ - 0.57);
+  benchGroup.add(latchPivot);
+
+  const ilmTop = new THREE.Mesh(new THREE.BoxGeometry(1.04, 0.048, 0.1), aluminumMat);
+  ilmTop.position.set(0, 0.03, 0.05);
+  const ilmBot = new THREE.Mesh(new THREE.BoxGeometry(1.04, 0.048, 0.1), aluminumMat);
+  ilmBot.position.set(0, 0.03, 1.1);
+  const ilmLeft = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.048, 1.05), aluminumMat);
+  ilmLeft.position.set(-0.47, 0.03, 0.575);
+  const ilmRight = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.048, 1.05), aluminumMat);
+  ilmRight.position.set(0.47, 0.03, 0.575);
+  const leverCurve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(0.55, 0.04, 0.06),
+    new THREE.Vector3(0.64, 0.05, 0.58),
+    new THREE.Vector3(0.64, 0.05, 1.08),
+    new THREE.Vector3(0.74, 0.06, 1.16),
+  ]);
+  const leverArm = new THREE.Mesh(new THREE.TubeGeometry(leverCurve, 16, 0.024, 8, false), aluminumMat);
+  const leverTip = new THREE.Mesh(
+    new THREE.SphereGeometry(0.058, 12, 12),
+    new THREE.MeshStandardMaterial({ color: 0x38bdf8, roughness: 0.3, metalness: 0.25 }),
+  );
+  leverTip.position.set(0.74, 0.06, 1.16);
+  latchPivot.add(ilmTop, ilmBot, ilmLeft, ilmRight, leverArm, leverTip);
+
+  // Komposit 3D CPU (PCB hijau + kapasitor tepi + IHS nikel dinamis sesuai SKU yang dibeli)
+  const cpuGroup = new THREE.Group();
+  cpuGroup.position.set(cpuCenterX, moboBaseY + 0.165, cpuCenterZ);
+  const cpuSub = new THREE.Mesh(
+    new THREE.BoxGeometry(0.84, 0.042, 0.88),
+    new THREE.MeshStandardMaterial({ color: 0x146c43, roughness: 0.48, metalness: 0.16 }),
+  );
+  const initCpuInfo = getEffectivePartInfo(initialState, 'cpu');
+  let activeCpuCode = initCpuInfo.shortCode;
+  let cpuIhsTex = createDynamicCpuIhsTexture(initCpuInfo.shortCode, initCpuInfo.model, maxAniso);
+  dynamicTextures.push(cpuIhsTex);
+  const cpuIhsMat = new THREE.MeshPhysicalMaterial({
+    map: cpuIhsTex,
+    bumpMap: texPack.brushedMetalBump,
+    bumpScale: 0.004,
+    roughness: 0.2,
+    metalness: 0.86,
+    clearcoat: 0.2,
+  });
+  const cpuIhs = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.065, 0.74), cpuIhsMat);
+  cpuIhs.position.y = 0.052;
+  cpuIhs.castShadow = !isSoftwareGl;
   cpuGroup.add(cpuSub, cpuIhs);
   cpuGroup.visible = false;
   benchGroup.add(cpuGroup);
 
-  // Komposit Pasta Termal (tetesan abu termal realistis di tengah IHS)
+  // Komposit Pasta Termal (tetesan abu metalik realistis di tengah IHS)
   const pasteMesh = new THREE.Mesh(
-    new THREE.SphereGeometry(0.14, 16, 12),
-    new THREE.MeshStandardMaterial({ color: 0x64748b, roughness: 0.34, metalness: 0.2 }),
+    new THREE.SphereGeometry(0.135, 18, 14),
+    new THREE.MeshPhysicalMaterial({
+      color: 0x738294,
+      roughness: 0.24,
+      metalness: 0.35,
+      clearcoat: 0.6,
+    }),
   );
-  pasteMesh.scale.set(1.2, 0.32, 1.2);
-  pasteMesh.position.set(cpuCenterX, moboBaseY + 0.245, cpuCenterZ);
+  pasteMesh.scale.set(1.25, 0.34, 1.25);
+  pasteMesh.position.set(cpuCenterX, moboBaseY + 0.26, cpuCenterZ);
   pasteMesh.visible = false;
   benchGroup.add(pasteMesh);
 
-  // Komposit 3D Pendingin CPU (Tower Air Cooler: Base + 4 Copper Heatpipes + 8 Aluminum Fins + Fan Shroud + Rotor)
-  const benchCoolerGroup = new THREE.Group();
-  benchCoolerGroup.position.set(cpuCenterX, moboBaseY + 0.23, cpuCenterZ);
-  const coolerBase = new THREE.Mesh(new THREE.BoxGeometry(0.82, 0.12, 0.82), darkMetalMat);
-  coolerBase.position.y = 0.06;
-  benchCoolerGroup.add(coolerBase);
+  // 4 Varian 3D Pendingin CPU di Meja (stock / tower / dual / aio)
+  const benchCoolerAnchor = new THREE.Group();
+  benchCoolerAnchor.position.set(cpuCenterX, moboBaseY + 0.24, cpuCenterZ);
+  benchCoolerAnchor.visible = false;
+  benchGroup.add(benchCoolerAnchor);
 
-  for (let i = 0; i < 8; i++) {
-    const fin = new THREE.Mesh(new THREE.BoxGeometry(1.06, 0.035, 0.86), aluminumMat);
-    fin.position.y = 0.24 + i * 0.11;
-    fin.castShadow = !isSoftwareGl;
-    benchCoolerGroup.add(fin);
-  }
-  const pipeOffsets = [-0.32, -0.11, 0.11, 0.32];
-  for (const px of pipeOffsets) {
-    const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 1.05, 10), copperMat);
-    pipe.position.set(px, 0.62, 0);
-    benchCoolerGroup.add(pipe);
-  }
-  const benchCoolerFanFrame = new THREE.Mesh(new THREE.BoxGeometry(0.96, 0.96, 0.16), darkPlasticMat);
-  benchCoolerFanFrame.position.set(0, 0.62, 0.52);
-  benchCoolerGroup.add(benchCoolerFanFrame);
-  const benchCoolerRotor = createFanAssembly(0.42, 0x475569, 0x1e293b);
-  benchCoolerRotor.position.set(0, 0.62, 0.61);
-  benchCoolerGroup.add(benchCoolerRotor);
-  benchCoolerGroup.visible = false;
-  benchGroup.add(benchCoolerGroup);
+  const coolerMats = {
+    aluminum: aluminumMat,
+    brushedDark: brushedDarkMetalMat,
+    copper: copperMat,
+    plastic: darkPlasticMat,
+    fanBlade: fanBladeMat,
+    rgbMat: rgbEmissiveMat,
+  };
+  const benchCoolerVariants = {
+    stock: buildCoolerVariantGroup('stock', coolerMats, !isSoftwareGl),
+    tower: buildCoolerVariantGroup('tower', coolerMats, !isSoftwareGl),
+    dual: buildCoolerVariantGroup('dual', coolerMats, !isSoftwareGl),
+    aio: buildCoolerVariantGroup('aio', coolerMats, !isSoftwareGl),
+  };
+  Object.values(benchCoolerVariants).forEach((v) => {
+    v.group.visible = false;
+    benchCoolerAnchor.add(v.group);
+  });
 
-  // 4 Slot RAM DDR5 + 2 Modul RAM Terpasang (A2 & B2)
-  const dimmXs = [0.68, 0.96, 1.24, 1.52];
+  // 4 Slot RAM DDR5 dengan klip pengunci + 2 Modul RAM dengan RGB Lightbar
+  const dimmXs = [0.7, 0.98, 1.26, 1.54];
   dimmXs.forEach((dx, idx) => {
     const isPrimary = idx === 1 || idx === 3;
     const slotRail = new THREE.Mesh(
-      new THREE.BoxGeometry(0.12, 0.14, 1.58),
+      new THREE.BoxGeometry(0.115, 0.15, 1.62),
       isPrimary
-        ? new THREE.MeshStandardMaterial({ color: 0x3b82f6, roughness: 0.55, metalness: 0.2 })
+        ? new THREE.MeshStandardMaterial({ color: 0x2563eb, roughness: 0.48, metalness: 0.25 })
         : darkPlasticMat,
     );
-    slotRail.position.set(dx, moboBaseY + 0.12, -0.45);
-    benchGroup.add(slotRail);
+    slotRail.position.set(dx, moboBaseY + 0.125, -0.45);
+    const clipTop = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.12, 0.08), aluminumMat);
+    clipTop.position.set(dx, moboBaseY + 0.18, -1.28);
+    const clipBot = clipTop.clone();
+    clipBot.position.set(dx, moboBaseY + 0.18, 0.38);
+    benchGroup.add(slotRail, clipTop, clipBot);
   });
 
-  const makeRamStick = (x: number) => {
+  const makeDetailedRamStick = (x: number) => {
     const stick = new THREE.Group();
-    stick.position.set(x, moboBaseY + 0.42, -0.45);
-    const body = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.48, 1.52), ramBlueMat);
+    stick.position.set(x, moboBaseY + 0.44, -0.45);
+    const goldEdge = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.09, 1.48), goldMat);
+    goldEdge.position.y = -0.26;
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.115, 0.48, 1.54), ramHeatspreaderMat);
     body.castShadow = !isSoftwareGl;
-    const topBar = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.07, 1.5), aluminumMat);
-    topBar.position.y = 0.25;
-    stick.add(body, topBar);
+    const accentFin = new THREE.Mesh(new THREE.BoxGeometry(0.126, 0.12, 1.46), brushedDarkMetalMat);
+    accentFin.position.y = 0.08;
+    const rgbDiffuser = new THREE.Mesh(new THREE.BoxGeometry(0.095, 0.085, 1.52), rgbEmissiveMat);
+    rgbDiffuser.position.y = 0.275;
+    stick.add(goldEdge, body, accentFin, rgbDiffuser);
     stick.visible = false;
     benchGroup.add(stick);
     return stick;
   };
-  const benchRamA2 = makeRamStick(dimmXs[1]);
-  const benchRamB2 = makeRamStick(dimmXs[3]);
+  const benchRamA2 = makeDetailedRamStick(dimmXs[1]);
+  const benchRamB2 = makeDetailedRamStick(dimmXs[3]);
 
-  // Slot M.2 NVMe & SSD Terpasang
-  const m2Connector = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.12, 0.34), darkPlasticMat);
-  m2Connector.position.set(-1.38, moboBaseY + 0.11, 0.58);
-  benchGroup.add(m2Connector);
-  const m2Standoff = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.12, 10), copperMat);
+  // Slot M.2 NVMe & SSD Multi-Part dengan Heatsink Dinamis
+  const m2Connector = new THREE.Mesh(new THREE.BoxGeometry(0.17, 0.13, 0.36), darkPlasticMat);
+  m2Connector.position.set(-1.38, moboBaseY + 0.115, 0.58);
+  const m2Standoff = new THREE.Mesh(new THREE.CylinderGeometry(0.052, 0.052, 0.12, 10), copperMat);
   m2Standoff.position.set(0.32, moboBaseY + 0.11, 0.58);
-  benchGroup.add(m2Standoff);
+  benchGroup.add(m2Connector, m2Standoff);
 
   const benchSsdGroup = new THREE.Group();
-  benchSsdGroup.position.set(-0.52, moboBaseY + 0.18, 0.58);
-  const ssdPcb = new THREE.Mesh(new THREE.BoxGeometry(1.66, 0.04, 0.34), darkPlasticMat);
-  const ssdLabel = new THREE.Mesh(new THREE.BoxGeometry(0.88, 0.02, 0.28), ramBlueMat);
-  ssdLabel.position.set(0.1, 0.03, 0);
-  const ssdChip = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.03, 0.22), darkMetalMat);
-  ssdChip.position.set(-0.54, 0.025, 0);
-  const ssdScrew = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.04, 10), aluminumMat);
-  ssdScrew.position.set(0.82, 0.03, 0);
-  benchSsdGroup.add(ssdPcb, ssdLabel, ssdChip, ssdScrew);
+  benchSsdGroup.position.set(-0.52, moboBaseY + 0.185, 0.58);
+  const ssdPcb = new THREE.Mesh(new THREE.BoxGeometry(1.66, 0.04, 0.35), darkPlasticMat);
+  const ssdGoldPins = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.042, 0.3), goldMat);
+  ssdGoldPins.position.set(-0.82, 0, 0);
+  const ssdController = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.036, 0.22), aluminumMat);
+  ssdController.position.set(-0.52, 0.03, 0);
+  const ssdNand1 = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.032, 0.26), brushedDarkMetalMat);
+  ssdNand1.position.set(-0.08, 0.028, 0);
+  const ssdNand2 = ssdNand1.clone();
+  ssdNand2.position.set(0.34, 0.028, 0);
+  const ssdProHeatsink = new THREE.Mesh(new THREE.BoxGeometry(1.42, 0.075, 0.34), brushedDarkMetalMat);
+  ssdProHeatsink.position.set(0.02, 0.055, 0);
+  const ssdScrew = new THREE.Mesh(new THREE.CylinderGeometry(0.058, 0.058, 0.045, 12), aluminumMat);
+  ssdScrew.position.set(0.82, 0.035, 0);
+  benchSsdGroup.add(ssdPcb, ssdGoldPins, ssdController, ssdNand1, ssdNand2, ssdProHeatsink, ssdScrew);
   benchSsdGroup.visible = false;
   benchGroup.add(benchSsdGroup);
 
-  // Slot PCIe x16, Heatsink Chipset B760, Baterai CMOS CR2032
-  const benchPcie = new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.15, 0.18), aluminumMat);
-  benchPcie.position.set(-0.45, moboBaseY + 0.12, 1.12);
-  benchGroup.add(benchPcie);
-
-  const chipsetSink = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.22, 0.85), darkMetalMat);
-  chipsetSink.position.set(1.38, moboBaseY + 0.16, 1.15);
-  benchGroup.add(chipsetSink);
-
-  const cmosBattery = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 0.06, 18), aluminumMat);
-  cmosBattery.position.set(0.62, moboBaseY + 0.08, 1.38);
-  benchGroup.add(cmosBattery);
+  // Slot PCIe x16 Berlapis Baja, Slot PCIe x1, Chipset B760 Beveled, Baterai CMOS CR2032
+  const benchPcieArmor = new THREE.Mesh(new THREE.BoxGeometry(2.14, 0.165, 0.2), aluminumMat);
+  benchPcieArmor.position.set(-0.45, moboBaseY + 0.13, 1.12);
+  const benchPcieLatch = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.18, 0.24), darkPlasticMat);
+  benchPcieLatch.position.set(0.66, moboBaseY + 0.14, 1.12);
+  const benchPcieX1 = new THREE.Mesh(new THREE.BoxGeometry(0.65, 0.13, 0.14), darkPlasticMat);
+  benchPcieX1.position.set(-1.15, moboBaseY + 0.11, 1.54);
+  const chipsetSink = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.22, 0.9), brushedDarkMetalMat);
+  chipsetSink.position.set(1.4, moboBaseY + 0.16, 1.14);
+  const chipsetStripe = new THREE.Mesh(new THREE.BoxGeometry(0.92, 0.03, 0.12), aluminumMat);
+  chipsetStripe.position.set(1.4, moboBaseY + 0.28, 1.14);
+  const cmosHolder = new THREE.Mesh(new THREE.CylinderGeometry(0.21, 0.21, 0.07, 18), darkPlasticMat);
+  cmosHolder.position.set(0.58, moboBaseY + 0.08, 1.48);
+  const cmosBattery = new THREE.Mesh(new THREE.CylinderGeometry(0.175, 0.175, 0.08, 20), aluminumMat);
+  cmosBattery.position.set(0.58, moboBaseY + 0.095, 1.48);
+  benchGroup.add(
+    benchPcieArmor,
+    benchPcieLatch,
+    benchPcieX1,
+    chipsetSink,
+    chipsetStripe,
+    cmosHolder,
+    cmosBattery,
+  );
 
   // Daftarkan hitbox raycasting Fase 1
   const benchLatchHit = registerInteractiveBox(
     benchGroup,
     'bench',
     'cpu_latch',
-    [0.36, 0.35, 1.25],
+    [0.38, 0.36, 1.28],
     [cpuCenterX + 0.64, moboBaseY + 0.22, cpuCenterZ],
     { type: 'cpu_latch', label: 'Tuas Pengunci Soket LGA1700' },
   );
@@ -683,7 +1046,7 @@ export function createWorkbench3DController(
     benchGroup,
     'bench',
     'cpu_zone',
-    [1.18, 0.85, 1.18],
+    [1.22, 0.9, 1.22],
     [cpuCenterX, moboBaseY + 0.44, cpuCenterZ],
     { type: 'slot', slotId: 'socket_cpu', label: 'Soket CPU LGA1700' },
   );
@@ -691,7 +1054,7 @@ export function createWorkbench3DController(
     benchGroup,
     'bench',
     'dimm_a2',
-    [0.24, 0.6, 1.64],
+    [0.24, 0.62, 1.66],
     [dimmXs[1], moboBaseY + 0.34, -0.45],
     { type: 'slot', slotId: 'dimm_a2', label: 'Slot RAM DDR5 A2*' },
   );
@@ -699,7 +1062,7 @@ export function createWorkbench3DController(
     benchGroup,
     'bench',
     'dimm_b2',
-    [0.24, 0.6, 1.64],
+    [0.24, 0.62, 1.66],
     [dimmXs[3], moboBaseY + 0.34, -0.45],
     { type: 'slot', slotId: 'dimm_b2', label: 'Slot RAM DDR5 B2*' },
   );
@@ -707,63 +1070,111 @@ export function createWorkbench3DController(
     benchGroup,
     'bench',
     'm2_slot',
-    [1.82, 0.26, 0.48],
+    [1.82, 0.28, 0.5],
     [-0.52, moboBaseY + 0.18, 0.58],
     { type: 'slot', slotId: 'm2_slot', label: 'Slot M.2 NVMe Gen4' },
   );
 
   // =========================================================================
-  // FASE 2: INTERIOR CASING MID-TOWER ATX (caseGroup)
+  // FASE 2: INTERIOR CASING MID-TOWER ATX REALISTIS (caseGroup)
   // =========================================================================
   const caseGroup = new THREE.Group();
   caseGroup.visible = false;
   scene.add(caseGroup);
 
-  // Rangka baja Mid-Tower ATX (terbuka di sisi depan +Z agar mudah diakses)
-  const caseW = 5.4;
-  const caseH = 4.6;
-  const caseD = 2.3;
-  const backPanel = new THREE.Mesh(new THREE.BoxGeometry(caseW, caseH, 0.14), steelChassisMat);
-  backPanel.position.set(0, caseH / 2, -caseD / 2);
+  const caseW = 5.6;
+  const caseH = 4.75;
+  const caseD = 2.4;
+
+  // Rangka baja Mid-Tower dengan kaki karet anti-getar
+  const backPanel = new THREE.Mesh(new THREE.BoxGeometry(caseW, caseH, 0.14), caseChassisMat);
+  backPanel.position.set(0, caseH / 2 + 0.14, -caseD / 2);
   backPanel.receiveShadow = !isSoftwareGl;
-  const bottomPanel = new THREE.Mesh(new THREE.BoxGeometry(caseW, 0.16, caseD), steelChassisMat);
-  bottomPanel.position.set(0, 0.08, 0);
-  const topPanel = new THREE.Mesh(new THREE.BoxGeometry(caseW, 0.16, caseD), steelChassisMat);
-  topPanel.position.set(0, caseH - 0.08, 0);
-  const leftPanel = new THREE.Mesh(new THREE.BoxGeometry(0.16, caseH, caseD), steelChassisMat);
-  leftPanel.position.set(-caseW / 2 + 0.08, caseH / 2, 0);
-  const rightPanel = new THREE.Mesh(new THREE.BoxGeometry(0.16, caseH, caseD), steelChassisMat);
-  rightPanel.position.set(caseW / 2 - 0.08, caseH / 2, 0);
+  const bottomPanel = new THREE.Mesh(new THREE.BoxGeometry(caseW, 0.16, caseD), caseChassisMat);
+  bottomPanel.position.set(0, 0.22, 0);
+  const topPanel = new THREE.Mesh(new THREE.BoxGeometry(caseW, 0.18, caseD), caseChassisMat);
+  topPanel.position.set(0, caseH + 0.05, 0);
+  const topDustFilter = new THREE.Mesh(new THREE.PlaneGeometry(3.2, 1.65), ventMeshMat);
+  topDustFilter.rotation.x = -Math.PI / 2;
+  topDustFilter.position.set(-0.3, caseH + 0.145, 0);
+  const leftPanel = new THREE.Mesh(new THREE.BoxGeometry(0.16, caseH, caseD), caseChassisMat);
+  leftPanel.position.set(-caseW / 2 + 0.08, caseH / 2 + 0.14, 0);
+  const rightPanel = new THREE.Mesh(new THREE.BoxGeometry(0.16, caseH, caseD), caseChassisMat);
+  rightPanel.position.set(caseW / 2 - 0.08, caseH / 2 + 0.14, 0);
+  const frontMeshPanel = new THREE.Mesh(new THREE.BoxGeometry(0.06, caseH - 0.35, caseD - 0.25), ventMeshMat);
+  frontMeshPanel.position.set(caseW / 2 + 0.02, caseH / 2 + 0.14, 0);
 
-  // Sekat shroud bawah PSU
-  const shroudTop = new THREE.Mesh(new THREE.BoxGeometry(caseW - 0.32, 0.1, caseD - 0.2), darkPlasticMat);
-  shroudTop.position.set(0, 1.02, 0);
-  caseGroup.add(backPanel, bottomPanel, topPanel, leftPanel, rightPanel, shroudTop);
+  // 4 Kaki karet aluminium casing
+  for (const fx of [-2.25, 2.25]) {
+    for (const fz of [-0.85, 0.85]) {
+      const foot = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.24, 0.14, 16), brushedDarkMetalMat);
+      foot.position.set(fx, 0.07, fz);
+      caseGroup.add(foot);
+    }
+  }
 
-  // 3 Kipas intake depan di sisi kanan dalam casing
-  const caseFans: THREE.Group[] = [];
-  [1.65, 2.65, 3.65].forEach((fy) => {
-    const fanFrame = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.86, 0.86), darkPlasticMat);
-    fanFrame.position.set(2.42, fy, 0.08);
-    caseGroup.add(fanFrame);
-    const rotor = createFanAssembly(0.38, 0x64748b, 0x1e293b);
-    rotor.rotation.y = -Math.PI / 2;
-    rotor.position.set(2.3, fy, 0.08);
-    caseGroup.add(rotor);
-    caseFans.push(rotor);
+  // Shroud bawah PSU + Grommet karet manajemen kabel pada back tray
+  const shroudTop = new THREE.Mesh(new THREE.BoxGeometry(caseW - 0.32, 0.1, caseD - 0.16), caseShroudMat);
+  shroudTop.position.set(0, 1.15, 0);
+  const shroudFront = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.88, 0.08), caseShroudMat);
+  shroudFront.position.set(1.3, 0.72, caseD / 2 - 0.12);
+  caseGroup.add(
+    backPanel,
+    bottomPanel,
+    topPanel,
+    topDustFilter,
+    leftPanel,
+    rightPanel,
+    frontMeshPanel,
+    shroudTop,
+    shroudFront,
+  );
+
+  // 3 Grommet karet jalur kabel vertikal di sebelah motherboard
+  [1.85, 2.85, 3.85].forEach((gy) => {
+    const grommet = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.56, 0.08), darkPlasticMat);
+    grommet.position.set(1.42, gy, -caseD / 2 + 0.1);
+    caseGroup.add(grommet);
   });
 
-  // Tombol POWER di bagian atas kanan casing
+  // 3 Kipas intake depan + 1 Kipas exhaust belakang dengan cincin ARGB!
+  const caseFans: THREE.Group[] = [];
+  [1.75, 2.75, 3.75].forEach((fy) => {
+    const fanFrame = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.9, 0.9), darkPlasticMat);
+    fanFrame.position.set(2.5, fy, 0.06);
+    caseGroup.add(fanFrame);
+    const fan = createDetailedFan(0.4, fanBladeMat, darkPlasticMat, rgbEmissiveMat);
+    fan.group.rotation.y = -Math.PI / 2;
+    fan.group.position.set(2.38, fy, 0.06);
+    caseGroup.add(fan.group);
+    caseFans.push(fan.rotor);
+  });
+
+  // 1 Kipas exhaust belakang kiri atas
+  const rearFanFrame = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.86, 0.86), darkPlasticMat);
+  rearFanFrame.position.set(-2.54, 3.62, -0.1);
+  caseGroup.add(rearFanFrame);
+  const rearFan = createDetailedFan(0.37, fanBladeMat, darkPlasticMat, rgbEmissiveMat);
+  rearFan.group.rotation.y = Math.PI / 2;
+  rearFan.group.position.set(-2.43, 3.62, -0.1);
+  caseGroup.add(rearFan.group);
+  caseFans.push(rearFan.rotor);
+
+  // Tombol POWER iluminasi & port Front I/O USB-C di atas kanan casing
   const powerBtnMat = new THREE.MeshStandardMaterial({
     color: 0x3b82f6,
     emissive: 0x1d4ed8,
-    emissiveIntensity: 0.45,
-    roughness: 0.35,
-    metalness: 0.3,
+    emissiveIntensity: 0.65,
+    roughness: 0.25,
+    metalness: 0.35,
   });
-  const powerBtnMesh = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.14, 0.38), powerBtnMat);
-  powerBtnMesh.position.set(2.05, caseH + 0.04, 0.65);
-  caseGroup.add(powerBtnMesh);
+  const powerBtnRing = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.24, 0.08, 22), brushedDarkMetalMat);
+  powerBtnRing.position.set(2.08, caseH + 0.15, 0.68);
+  const powerBtnMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.17, 0.11, 20), powerBtnMat);
+  powerBtnMesh.position.set(2.08, caseH + 0.16, 0.68);
+  const frontUsbC = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.05, 0.1), aluminumMat);
+  frontUsbC.position.set(1.55, caseH + 0.15, 0.68);
+  caseGroup.add(powerBtnRing, powerBtnMesh, frontUsbC);
 
   // 9 Standoff motherboard vertikal di back tray
   const caseStandoffs = new THREE.InstancedMesh(
@@ -773,86 +1184,176 @@ export function createWorkbench3DController(
   );
   let csIdx = 0;
   for (const sx of [-1.95, -0.5, 0.95]) {
-    for (const sy of [1.45, 2.75, 4.05]) {
-      dummy.position.set(sx, sy, -0.98);
-      dummy.rotation.set(Math.PI / 2, 0, 0);
-      dummy.updateMatrix();
-      caseStandoffs.setMatrixAt(csIdx++, dummy.matrix);
+    for (const sy of [1.58, 2.88, 4.18]) {
+      _tmpObj.position.set(sx, sy, -1.04);
+      _tmpObj.rotation.set(Math.PI / 2, 0, 0);
+      _tmpObj.scale.set(1, 1, 1);
+      _tmpObj.updateMatrix();
+      caseStandoffs.setMatrixAt(csIdx++, _tmpObj.matrix);
     }
   }
-  dummy.rotation.set(0, 0, 0);
   caseStandoffs.instanceMatrix.needsUpdate = true;
   caseStandoffs.computeBoundingSphere();
   caseGroup.add(caseStandoffs);
 
-  // Komposit 3D PSU 650 W 80+ Gold
+  // Komposit 3D PSU dengan Badge Wattage Dinamis + Sakelar Rocker Tilting + Port Modular
   const psuGroup = new THREE.Group();
-  psuGroup.position.set(-1.35, 0.55, 0.05);
-  const psuBody = new THREE.Mesh(new THREE.BoxGeometry(1.95, 0.78, 1.45), psuSteelMat);
+  const psuBasePos = new THREE.Vector3(-1.38, 0.68, 0.06);
+  psuGroup.position.copy(psuBasePos);
+  const psuBody = new THREE.Mesh(new THREE.BoxGeometry(2.02, 0.82, 1.5), psuSteelMat);
   psuBody.castShadow = !isSoftwareGl;
-  const psuTex = createLabelTexture('650W', '80+ GOLD', '#f59e0b', '#0f172a', maxAniso);
-  const psuBadge = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.86, 0.44),
-    new THREE.MeshStandardMaterial({ map: psuTex, roughness: 0.38, metalness: 0.25 }),
+  const psuGrille = new THREE.Mesh(new THREE.PlaneGeometry(1.1, 0.62), ventMeshMat);
+  psuGrille.rotation.y = -Math.PI / 2;
+  psuGrille.position.set(-1.02, 0, 0);
+
+  let activePsuCap = getPsuCapacityWatts(initialState);
+  let psuBadgeTex = createDynamicBadgeTexture(
+    `${activePsuCap}W`,
+    '80+ GOLD',
+    '#0f172a',
+    '#f59e0b',
+    '#f8fafc',
+    maxAniso,
   );
-  psuBadge.position.set(-0.32, 0, 0.735);
+  dynamicTextures.push(psuBadgeTex);
+  const psuBadgeMat = new THREE.MeshStandardMaterial({
+    map: psuBadgeTex,
+    roughness: 0.34,
+    metalness: 0.3,
+  });
+  const psuBadge = new THREE.Mesh(new THREE.PlaneGeometry(1.08, 0.52), psuBadgeMat);
+  psuBadge.position.set(-0.28, 0.02, 0.758);
+
   const psuSwitchMat = new THREE.MeshStandardMaterial({
     color: 0x475569,
     emissive: 0x000000,
-    roughness: 0.45,
-    metalness: 0.2,
+    roughness: 0.4,
+    metalness: 0.25,
   });
-  const psuSwitchMesh = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.28, 0.12), psuSwitchMat);
-  psuSwitchMesh.position.set(0.55, 0, 0.72);
-  psuGroup.add(psuBody, psuBadge, psuSwitchMesh);
+  const psuSwitchBezel = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.34, 0.08), darkPlasticMat);
+  psuSwitchBezel.position.set(0.62, 0, 0.74);
+  const psuSwitchMesh = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.24, 0.14), psuSwitchMat);
+  psuSwitchMesh.position.set(0.62, 0, 0.76);
+  psuGroup.add(psuBody, psuGrille, psuBadge, psuSwitchBezel, psuSwitchMesh);
   psuGroup.visible = false;
   caseGroup.add(psuGroup);
 
   // Komposit 3D Motherboard Terakit (Vertikal di dalam Casing)
   const caseMoboGroup = new THREE.Group();
-  caseMoboGroup.position.set(-0.5, 2.75, -0.82);
-  const casePcb = new THREE.Mesh(new THREE.BoxGeometry(3.25, 2.95, 0.1), pcbMat);
+  const caseMoboBasePos = new THREE.Vector3(-0.5, 2.9, -0.88);
+  caseMoboGroup.position.copy(caseMoboBasePos);
+
+  const casePcb = new THREE.Mesh(new THREE.BoxGeometry(3.3, 3.0, 0.1), pcbMat);
   casePcb.castShadow = !isSoftwareGl;
   caseMoboGroup.add(casePcb);
 
-  // Tower Cooler terpasang vertikal + kipas berputar saat POST
-  const caseCoolerBody = new THREE.Mesh(new THREE.BoxGeometry(0.88, 0.92, 0.65), aluminumMat);
-  caseCoolerBody.position.set(-0.35, 0.42, 0.38);
-  caseMoboGroup.add(caseCoolerBody);
-  const caseCoolerRotor = createFanAssembly(0.36, 0x475569, 0x1e293b);
-  caseCoolerRotor.position.set(-0.35, 0.42, 0.72);
-  caseMoboGroup.add(caseCoolerRotor);
-  caseFans.push(caseCoolerRotor);
+  // VRM heatsinks & I/O armor pada motherboard di casing
+  const cIoShroud = new THREE.Mesh(new THREE.BoxGeometry(0.42, 1.12, 0.32), brushedDarkMetalMat);
+  cIoShroud.position.set(-1.38, 0.65, 0.21);
+  const cVrmTop = new THREE.Mesh(new THREE.BoxGeometry(1.12, 0.28, 0.24), brushedDarkMetalMat);
+  cVrmTop.position.set(-0.42, 1.24, 0.17);
+  caseMoboGroup.add(cIoShroud, cVrmTop);
 
-  // RAM Dual-Channel & SSD NVMe terpasang pada motherboard casing
-  [0.52, 0.76].forEach((rx) => {
-    const rMesh = new THREE.Mesh(new THREE.BoxGeometry(0.1, 1.05, 0.34), ramBlueMat);
-    rMesh.position.set(rx, 0.42, 0.22);
-    caseMoboGroup.add(rMesh);
+  // 4 Varian Pendingin CPU di dalam Casing (termasuk Liquid AIO 240 mm + Radiator Atas + Selang Coolant!)
+  const caseCoolerAnchor = new THREE.Group();
+  caseCoolerAnchor.position.set(-0.35, 0.44, 0.12);
+  caseCoolerAnchor.rotation.x = Math.PI / 2;
+  caseMoboGroup.add(caseCoolerAnchor);
+
+  const caseCoolerVariants = {
+    stock: buildCoolerVariantGroup('stock', coolerMats, !isSoftwareGl),
+    tower: buildCoolerVariantGroup('tower', coolerMats, !isSoftwareGl),
+    dual: buildCoolerVariantGroup('dual', coolerMats, !isSoftwareGl),
+    aio: buildCoolerVariantGroup('aio', coolerMats, !isSoftwareGl),
+  };
+  Object.values(caseCoolerVariants).forEach((v) => {
+    v.group.visible = false;
+    caseCoolerAnchor.add(v.group);
+    v.rotors.forEach((r) => caseFans.push(r));
   });
-  const caseSsd = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.22, 0.08), ramBlueMat);
+
+  // Radiator Atas 240 mm + 2 Kipas RGB + 2 Selang Braided untuk Liquid AIO (hanya tampak jika cooler_aio_240)
+  const aioRadiatorGroup = new THREE.Group();
+  const radBody = new THREE.Mesh(new THREE.BoxGeometry(2.35, 0.28, 1.05), brushedDarkMetalMat);
+  radBody.position.set(-0.35, caseH - 0.14, 0.05);
+  aioRadiatorGroup.add(radBody);
+  [-0.9, 0.2].forEach((rx) => {
+    const rFanFrame = new THREE.Mesh(new THREE.BoxGeometry(0.92, 0.16, 0.92), darkPlasticMat);
+    rFanFrame.position.set(rx, caseH - 0.34, 0.05);
+    aioRadiatorGroup.add(rFanFrame);
+    const rFan = createDetailedFan(0.4, fanBladeMat, darkPlasticMat, rgbEmissiveMat);
+    rFan.group.rotation.x = Math.PI / 2;
+    rFan.group.position.set(rx, caseH - 0.43, 0.05);
+    aioRadiatorGroup.add(rFan.group);
+    caseFans.push(rFan.rotor);
+  });
+  const aioTubeMat = new THREE.MeshStandardMaterial({
+    color: 0x0f172a,
+    bumpMap: texPack.braidedCableBump,
+    bumpScale: 0.025,
+    roughness: 0.72,
+    metalness: 0.1,
+  });
+  const aioHose1 = new THREE.Mesh(
+    new THREE.TubeGeometry(
+      new THREE.CatmullRomCurve3([
+        new THREE.Vector3(-0.46, 3.36, -0.45),
+        new THREE.Vector3(0.18, 3.45, 0.22),
+        new THREE.Vector3(0.56, 4.02, 0.25),
+        new THREE.Vector3(0.55, caseH - 0.28, 0.12),
+      ]),
+      24,
+      0.055,
+      10,
+      false,
+    ),
+    aioTubeMat,
+  );
+  const aioHose2 = new THREE.Mesh(
+    new THREE.TubeGeometry(
+      new THREE.CatmullRomCurve3([
+        new THREE.Vector3(-0.46, 3.24, -0.45),
+        new THREE.Vector3(0.28, 3.26, 0.32),
+        new THREE.Vector3(0.72, 3.92, 0.28),
+        new THREE.Vector3(0.7, caseH - 0.28, 0.06),
+      ]),
+      24,
+      0.055,
+      10,
+      false,
+    ),
+    aioTubeMat,
+  );
+  aioRadiatorGroup.add(aioHose1, aioHose2);
+  aioRadiatorGroup.visible = false;
+  caseGroup.add(aioRadiatorGroup);
+
+  // RAM Dual-Channel RGB & SSD NVMe terpasang pada motherboard casing
+  [0.54, 0.78].forEach((rx) => {
+    const rBody = new THREE.Mesh(new THREE.BoxGeometry(0.1, 1.08, 0.34), ramHeatspreaderMat);
+    rBody.position.set(rx, 0.42, 0.22);
+    const rRgb = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.04, 0.06), rgbEmissiveMat);
+    rRgb.position.set(rx, 0.42, 0.4);
+    caseMoboGroup.add(rBody, rRgb);
+  });
+  const caseSsd = new THREE.Mesh(new THREE.BoxGeometry(0.98, 0.22, 0.09), brushedDarkMetalMat);
   caseSsd.position.set(-0.35, -0.22, 0.09);
   caseMoboGroup.add(caseSsd);
 
   // Header 24-Pin & 8-Pin CPU
   const caseHeader24Mat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.6, metalness: 0.2 });
-  const caseHeader24 = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.76, 0.22), caseHeader24Mat);
-  caseHeader24.position.set(1.36, 0.26, 0.16);
-  caseMoboGroup.add(caseHeader24);
-
+  const caseHeader24 = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.78, 0.22), caseHeader24Mat);
+  caseHeader24.position.set(1.38, 0.26, 0.16);
   const caseHeader8CpuMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.6, metalness: 0.2 });
   const caseHeader8Cpu = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.2, 0.22), caseHeader8CpuMat);
   caseHeader8Cpu.position.set(-1.12, 1.24, 0.16);
-  caseMoboGroup.add(caseHeader8Cpu);
-
-  // Slot PCIe x16
-  const casePcieSlot = new THREE.Mesh(new THREE.BoxGeometry(1.55, 0.14, 0.16), aluminumMat);
+  const casePcieSlot = new THREE.Mesh(new THREE.BoxGeometry(1.58, 0.14, 0.16), aluminumMat);
   casePcieSlot.position.set(-0.42, -0.62, 0.13);
-  caseMoboGroup.add(casePcieSlot);
+  caseMoboGroup.add(caseHeader24, caseHeader8Cpu, casePcieSlot);
 
-  // EZ-Debug POST LED Strip 3D (CPU, DRAM, VGA, BOOT) di kanan atas motherboard
-  const ledBoard = new THREE.Mesh(new THREE.BoxGeometry(0.84, 0.22, 0.08), psuSteelMat);
-  ledBoard.position.set(1.02, 1.2, 0.09);
+  // EZ-Debug POST LED Strip 3D (CPU, DRAM, VGA, BOOT)
+  const ledBoard = new THREE.Mesh(new THREE.BoxGeometry(0.86, 0.22, 0.08), psuSteelMat);
+  ledBoard.position.set(1.02, 1.22, 0.09);
   caseMoboGroup.add(ledBoard);
 
   const postLedMaterials = new Map<PostLedKey, THREE.MeshStandardMaterial>();
@@ -861,11 +1362,11 @@ export function createWorkbench3DController(
       color: 0x334155,
       emissive: 0x000000,
       emissiveIntensity: 0,
-      roughness: 0.3,
+      roughness: 0.25,
       metalness: 0.1,
     });
-    const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.048, 12, 12), mat);
-    bulb.position.set(0.74 + idx * 0.185, 1.2, 0.14);
+    const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.05, 12, 12), mat);
+    bulb.position.set(0.74 + idx * 0.185, 1.22, 0.14);
     caseMoboGroup.add(bulb);
     postLedMaterials.set(ledKey, mat);
   });
@@ -873,103 +1374,290 @@ export function createWorkbench3DController(
   caseMoboGroup.visible = false;
   caseGroup.add(caseMoboGroup);
 
-  // Komposit 3D Kartu Grafis (GPU Dual-Fan + Backplate + Port Daya 8-Pin)
+  // Komposit 3D Kartu Grafis Dinamis (Compact Dual-Fan / Mid Dual-Fan / Flagship Triple-Fan 4080/4090!)
   const caseGpuGroup = new THREE.Group();
-  caseGpuGroup.position.set(-0.52, 2.08, 0.02);
-  const gpuShroud = new THREE.Mesh(new THREE.BoxGeometry(2.45, 0.42, 1.22), darkMetalMat);
-  gpuShroud.castShadow = !isSoftwareGl;
-  const gpuBackplate = new THREE.Mesh(new THREE.BoxGeometry(2.46, 0.05, 1.22), aluminumMat);
-  gpuBackplate.position.y = 0.23;
-  const gpuFrontTrim = new THREE.Mesh(new THREE.BoxGeometry(2.42, 0.12, 0.04), ramBlueMat);
-  gpuFrontTrim.position.set(0, 0.08, 0.62);
-  const gpuPort8PinMat = new THREE.MeshStandardMaterial({ color: 0xf59e0b, roughness: 0.45, metalness: 0.25 });
-  const gpuPort8Pin = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.2, 0.12), gpuPort8PinMat);
-  gpuPort8Pin.position.set(0.76, 0.02, 0.63);
-  caseGpuGroup.add(gpuShroud, gpuBackplate, gpuFrontTrim, gpuPort8Pin);
+  const caseGpuBasePos = new THREE.Vector3(-0.48, 2.22, 0.04);
+  caseGpuGroup.position.copy(caseGpuBasePos);
 
-  // 2 Kipas aksial GPU (terlihat di bawah shroud)
-  [-0.55, 0.35].forEach((gx) => {
-    const gRotor = createFanAssembly(0.36, 0x64748b, 0x0f172a);
-    gRotor.rotation.x = Math.PI / 2;
-    gRotor.position.set(gx, -0.22, 0.02);
-    caseGpuGroup.add(gRotor);
-    caseFans.push(gRotor);
+  const gpuPort8PinMat = new THREE.MeshStandardMaterial({ color: 0xf59e0b, roughness: 0.4, metalness: 0.25 });
+
+  const buildGpuVariant = (tier: 'compact' | 'dual' | 'triple') => {
+    const g = new THREE.Group();
+    const len = tier === 'compact' ? 2.05 : tier === 'dual' ? 2.48 : 3.05;
+    const thick = tier === 'compact' ? 0.36 : tier === 'dual' ? 0.46 : 0.58;
+    const depth = tier === 'triple' ? 1.32 : 1.22;
+    const xShift = (len - 2.48) * 0.5;
+
+    const shroud = new THREE.Mesh(new THREE.BoxGeometry(len, thick, depth), brushedDarkMetalMat);
+    shroud.position.x = xShift;
+    shroud.castShadow = !isSoftwareGl;
+
+    // Sirip heatsink aluminium terbuka di sisi depan bawah shroud
+    const finCore = new THREE.Mesh(
+      new THREE.BoxGeometry(len - 0.14, thick * 0.52, depth - 0.08),
+      aluminumMat,
+    );
+    finCore.position.set(xShift, -thick * 0.1, 0.02);
+
+    // Backplate aluminium disikat dengan ventilasi
+    const backplate = new THREE.Mesh(new THREE.BoxGeometry(len + 0.02, 0.05, depth), aluminumMat);
+    backplate.position.set(xShift, thick / 2 + 0.025, 0);
+
+    // Pipa tembaga tampak di sisi kartu
+    const gpuPipe = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.028, 0.028, len * 0.72, 10),
+      copperMat,
+    );
+    gpuPipe.rotation.z = Math.PI / 2;
+    gpuPipe.position.set(xShift, -0.02, depth / 2 + 0.01);
+
+    // Strip LED RGB di sisi depan GPU
+    const ledBar = new THREE.Mesh(new THREE.BoxGeometry(len * 0.48, 0.055, 0.04), rgbEmissiveMat);
+    ledBar.position.set(xShift - 0.25, thick * 0.22, depth / 2 + 0.015);
+
+    // Braket PCIe logam belakang (kiri)
+    const ioBracket = new THREE.Mesh(new THREE.BoxGeometry(0.06, thick + 0.26, depth + 0.04), aluminumMat);
+    ioBracket.position.set(-2.48 / 2 - 0.03, 0.05, 0);
+
+    // Konektor 8-Pin daya GPU
+    const port8 = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.2, 0.12), gpuPort8PinMat);
+    port8.position.set(0.72, 0.04, depth / 2 + 0.02);
+
+    g.add(shroud, finCore, backplate, gpuPipe, ledBar, ioBracket, port8);
+
+    // Kipas aksial di bagian bawah shroud (2 kipas untuk Compact/Dual, 3 kipas untuk Flagship Triple!)
+    const fanXs =
+      tier === 'triple' ? [-0.62, 0.28, 1.18] : tier === 'dual' ? [-0.52, 0.42] : [-0.46, 0.34];
+    const fanRad = tier === 'compact' ? 0.33 : 0.38;
+    for (const fx of fanXs) {
+      const fan = createDetailedFan(fanRad, fanBladeMat, darkPlasticMat);
+      fan.group.rotation.x = Math.PI / 2;
+      fan.group.position.set(fx, -thick / 2 - 0.02, 0.02);
+      g.add(fan.group);
+      caseFans.push(fan.rotor);
+    }
+
+    return g;
+  };
+
+  const gpuVariants = {
+    compact: buildGpuVariant('compact'),
+    dual: buildGpuVariant('dual'),
+    triple: buildGpuVariant('triple'),
+  };
+  Object.values(gpuVariants).forEach((g) => {
+    g.visible = false;
+    caseGpuGroup.add(g);
   });
   caseGpuGroup.visible = false;
   caseGroup.add(caseGpuGroup);
 
-  // 3D Braided Power Cables menggunakan TubeGeometry + CatmullRomCurve3
-  const cable24Mesh = new THREE.Mesh(
-    new THREE.TubeGeometry(
-      new THREE.CatmullRomCurve3([
-        new THREE.Vector3(-0.35, 0.72, -0.15),
-        new THREE.Vector3(1.45, 1.15, -0.25),
-        new THREE.Vector3(1.52, 2.35, -0.42),
-        new THREE.Vector3(0.86, 3.01, -0.62),
-      ]),
-      24,
-      0.08,
-      10,
-      false,
-    ),
-    new THREE.MeshStandardMaterial({ color: 0x2563eb, roughness: 0.68, metalness: 0.12 }),
-  );
-  cable24Mesh.visible = false;
-  caseGroup.add(cable24Mesh);
+  // 3D Braided Sleeved Cables dengan Bump Anyaman + Cable Combs + Konektor Molded!
+  const createCableBundle = (
+    points: THREE.Vector3[],
+    colorHex: number,
+    radius: number,
+    combIndices: number[],
+  ) => {
+    const group = new THREE.Group();
+    const curve = new THREE.CatmullRomCurve3(points);
+    const mat = new THREE.MeshStandardMaterial({
+      color: colorHex,
+      bumpMap: texPack.braidedCableBump,
+      bumpScale: 0.022,
+      roughness: 0.65,
+      metalness: 0.1,
+    });
+    const tube = new THREE.Mesh(new THREE.TubeGeometry(curve, 28, radius, 10, false), mat);
+    group.add(tube);
 
-  const cable8CpuMesh = new THREE.Mesh(
-    new THREE.TubeGeometry(
-      new THREE.CatmullRomCurve3([
-        new THREE.Vector3(-0.45, 0.75, -0.5),
-        new THREE.Vector3(1.65, 1.45, -0.88),
-        new THREE.Vector3(1.55, 4.18, -0.88),
-        new THREE.Vector3(-1.62, 4.18, -0.64),
-        new THREE.Vector3(-1.62, 3.99, -0.64),
-      ]),
-      28,
-      0.06,
-      8,
-      false,
-    ),
-    new THREE.MeshStandardMaterial({ color: 0x10b981, roughness: 0.68, metalness: 0.12 }),
-  );
-  cable8CpuMesh.visible = false;
-  caseGroup.add(cable8CpuMesh);
+    // Cable combs organizer di sepanjang lengkungan kabel
+    for (const t of combIndices) {
+      const pt = curve.getPoint(t);
+      const tangent = curve.getTangent(t);
+      const comb = new THREE.Mesh(
+        new THREE.BoxGeometry(radius * 2.6, radius * 2.6, 0.07),
+        darkPlasticMat,
+      );
+      comb.position.copy(pt);
+      comb.lookAt(pt.clone().add(tangent));
+      group.add(comb);
+    }
 
-  const cable8GpuMesh = new THREE.Mesh(
-    new THREE.TubeGeometry(
-      new THREE.CatmullRomCurve3([
-        new THREE.Vector3(-0.2, 0.92, 0.35),
-        new THREE.Vector3(0.45, 1.25, 0.78),
-        new THREE.Vector3(0.55, 1.75, 0.88),
-        new THREE.Vector3(0.24, 2.1, 0.66),
-      ]),
-      22,
-      0.072,
-      8,
-      false,
-    ),
-    new THREE.MeshStandardMaterial({ color: 0xf59e0b, roughness: 0.62, metalness: 0.14 }),
+    // Plug konektor di ujung target
+    const endPt = points[points.length - 1];
+    const plug = new THREE.Mesh(
+      new THREE.BoxGeometry(radius * 2.8, radius * 2.8, radius * 3.1),
+      darkPlasticMat,
+    );
+    plug.position.copy(endPt);
+    group.add(plug);
+
+    group.visible = false;
+    caseGroup.add(group);
+    return group;
+  };
+
+  const cable24Mesh = createCableBundle(
+    [
+      new THREE.Vector3(-0.32, 0.85, -0.18),
+      new THREE.Vector3(1.42, 1.35, -0.3),
+      new THREE.Vector3(1.52, 2.55, -0.48),
+      new THREE.Vector3(0.88, 3.16, -0.68),
+    ],
+    0x2563eb,
+    0.082,
+    [0.38, 0.68],
   );
-  cable8GpuMesh.visible = false;
-  caseGroup.add(cable8GpuMesh);
+  const cable8CpuMesh = createCableBundle(
+    [
+      new THREE.Vector3(-0.42, 0.88, -0.52),
+      new THREE.Vector3(1.62, 1.65, -0.94),
+      new THREE.Vector3(1.54, 4.32, -0.94),
+      new THREE.Vector3(-1.62, 4.32, -0.7),
+      new THREE.Vector3(-1.62, 4.14, -0.7),
+    ],
+    0x10b981,
+    0.058,
+    [0.5, 0.82],
+  );
+  const cable8GpuMesh = createCableBundle(
+    [
+      new THREE.Vector3(-0.18, 1.05, 0.36),
+      new THREE.Vector3(0.46, 1.38, 0.82),
+      new THREE.Vector3(0.56, 1.88, 0.92),
+      new THREE.Vector3(0.24, 2.26, 0.7),
+    ],
+    0xf59e0b,
+    0.072,
+    [0.42, 0.72],
+  );
+
+  // Panel Kaca Samping Tempered Glass (Dapat dibuka/ditutup dari dok 3D!)
+  const glassGroup = new THREE.Group();
+  const glassPaneMat = new THREE.MeshPhysicalMaterial({
+    color: 0x0f172a,
+    roughness: 0.08,
+    metalness: 0.05,
+    transmission: isSoftwareGl ? 0 : 0.78,
+    thickness: 0.14,
+    ior: 1.52,
+    clearcoat: 1.0,
+    transparent: true,
+    opacity: isSoftwareGl ? 0.24 : 0.92,
+    depthWrite: false,
+  });
+  const glassPane = new THREE.Mesh(
+    new THREE.BoxGeometry(caseW - 0.2, caseH - 0.16, 0.05),
+    glassPaneMat,
+  );
+  glassPane.renderOrder = 10;
+  glassGroup.add(glassPane);
+
+  // Bingkai keramik hitam + 4 baut jempol stainless steel (knurled thumbscrews)
+  const borderMat = new THREE.MeshStandardMaterial({ color: 0x090d16, roughness: 0.4, metalness: 0.3 });
+  const gbTop = new THREE.Mesh(new THREE.BoxGeometry(caseW - 0.16, 0.14, 0.065), borderMat);
+  gbTop.position.y = (caseH - 0.16) / 2 - 0.07;
+  const gbBot = gbTop.clone();
+  gbBot.position.y = -(caseH - 0.16) / 2 + 0.07;
+  const gbLeft = new THREE.Mesh(new THREE.BoxGeometry(0.14, caseH - 0.16, 0.065), borderMat);
+  gbLeft.position.x = -(caseW - 0.16) / 2 + 0.07;
+  const gbRight = gbLeft.clone();
+  gbRight.position.x = (caseW - 0.16) / 2 - 0.07;
+  glassGroup.add(gbTop, gbBot, gbLeft, gbRight);
+
+  for (const tx of [-(caseW / 2 - 0.28), caseW / 2 - 0.28]) {
+    for (const ty of [-(caseH / 2 - 0.3), caseH / 2 - 0.3]) {
+      const thumb = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.12, 14), aluminumMat);
+      thumb.rotation.x = Math.PI / 2;
+      thumb.position.set(tx, ty, 0.04);
+      glassGroup.add(thumb);
+    }
+  }
+  glassGroup.position.set(0, caseH / 2 + 0.14, caseD / 2 + 0.05);
+  glassGroup.visible = false;
+  caseGroup.add(glassGroup);
+
+  // Visualisasi Aliran Udara 3D (Intake Biru Sejuk -> Exhaust Oranye Hangat)
+  const airflowGroup = new THREE.Group();
+  const airflowArrows: { mesh: THREE.Mesh; curve: THREE.CatmullRomCurve3; phase: number }[] = [];
+  const coolArrowMat = new THREE.MeshBasicMaterial({
+    color: 0x38bdf8,
+    transparent: true,
+    opacity: 0.85,
+  });
+  const warmArrowMat = new THREE.MeshBasicMaterial({
+    color: 0xf97316,
+    transparent: true,
+    opacity: 0.85,
+  });
+  const airflowCurves: { curve: THREE.CatmullRomCurve3; warm: boolean }[] = [
+    {
+      curve: new THREE.CatmullRomCurve3([
+        new THREE.Vector3(2.9, 3.7, 0.1),
+        new THREE.Vector3(1.1, 3.6, 0.15),
+        new THREE.Vector3(-0.7, 3.55, 0.05),
+        new THREE.Vector3(-2.7, 3.65, -0.05),
+      ]),
+      warm: false,
+    },
+    {
+      curve: new THREE.CatmullRomCurve3([
+        new THREE.Vector3(2.9, 2.65, 0.15),
+        new THREE.Vector3(0.9, 2.45, 0.2),
+        new THREE.Vector3(-0.6, 2.7, 0.15),
+        new THREE.Vector3(-2.7, 3.5, -0.1),
+      ]),
+      warm: true,
+    },
+    {
+      curve: new THREE.CatmullRomCurve3([
+        new THREE.Vector3(2.9, 1.7, 0.15),
+        new THREE.Vector3(0.8, 1.85, 0.25),
+        new THREE.Vector3(-0.4, 2.9, 0.2),
+        new THREE.Vector3(-0.5, 4.95, 0.05),
+      ]),
+      warm: true,
+    },
+  ];
+  const arrowConeGeo = new THREE.ConeGeometry(0.11, 0.34, 10);
+  arrowConeGeo.rotateX(Math.PI / 2);
+
+  for (const entry of airflowCurves) {
+    const ribbon = new THREE.Mesh(
+      new THREE.TubeGeometry(entry.curve, 26, 0.025, 6, false),
+      new THREE.MeshBasicMaterial({
+        color: entry.warm ? 0xfb923c : 0x38bdf8,
+        transparent: true,
+        opacity: 0.35,
+      }),
+    );
+    airflowGroup.add(ribbon);
+    for (let k = 0; k < 3; k++) {
+      const cone = new THREE.Mesh(arrowConeGeo, entry.warm ? warmArrowMat : coolArrowMat);
+      airflowGroup.add(cone);
+      airflowArrows.push({ mesh: cone, curve: entry.curve, phase: k / 3 });
+    }
+  }
+  airflowGroup.visible = false;
+  caseGroup.add(airflowGroup);
 
   // Daftarkan hitbox raycasting Fase 2
   const casePsuHit = registerInteractiveBox(
     caseGroup,
     'case',
     'psu_bay',
-    [2.1, 0.9, 1.55],
-    [-1.35, 0.55, 0.05],
-    { type: 'slot', slotId: 'psu_bay', label: 'Ruang PSU ATX (650 W)' },
+    [2.12, 0.92, 1.56],
+    [-1.38, 0.68, 0.06],
+    { type: 'slot', slotId: 'psu_bay', label: 'Ruang PSU ATX' },
     'vertical',
   );
   const caseMoboHit = registerInteractiveBox(
     caseGroup,
     'case',
     'case_standoffs',
-    [3.35, 3.05, 0.4],
-    [-0.5, 2.75, -0.82],
+    [3.38, 3.08, 0.4],
+    [-0.5, 2.9, -0.88],
     { type: 'slot', slotId: 'case_standoffs', label: '9 Standoff Motherboard ATX' },
     'vertical',
   );
@@ -977,8 +1665,8 @@ export function createWorkbench3DController(
     caseGroup,
     'case',
     'pcie_x16',
-    [2.4, 0.6, 1.2],
-    [-0.52, 2.1, -0.05],
+    [2.65, 0.65, 1.28],
+    [-0.48, 2.22, -0.02],
     { type: 'slot', slotId: 'pcie_x16', label: 'Slot PCIe 4.0 x16 (GPU)' },
     'vertical',
   );
@@ -986,8 +1674,8 @@ export function createWorkbench3DController(
     caseGroup,
     'case',
     'header_24pin',
-    [0.52, 0.95, 0.55],
-    [0.86, 3.01, -0.62],
+    [0.54, 0.96, 0.56],
+    [0.88, 3.16, -0.68],
     { type: 'slot', slotId: 'header_24pin', label: 'Header ATX 24-Pin' },
     'vertical',
   );
@@ -995,8 +1683,8 @@ export function createWorkbench3DController(
     caseGroup,
     'case',
     'header_8pin_cpu',
-    [0.62, 0.45, 0.55],
-    [-1.62, 3.99, -0.62],
+    [0.64, 0.46, 0.56],
+    [-1.62, 4.14, -0.68],
     { type: 'slot', slotId: 'header_8pin_cpu', label: 'Header EPS 8-Pin CPU' },
     'vertical',
   );
@@ -1004,8 +1692,8 @@ export function createWorkbench3DController(
     caseGroup,
     'case',
     'gpu_power_8pin',
-    [0.58, 0.48, 0.45],
-    [0.24, 2.1, 0.68],
+    [0.6, 0.5, 0.48],
+    [0.24, 2.26, 0.72],
     { type: 'slot', slotId: 'gpu_power_8pin', label: 'Port Daya PCIe 8-Pin GPU' },
     'vertical',
   );
@@ -1013,44 +1701,57 @@ export function createWorkbench3DController(
     caseGroup,
     'case',
     'power_button',
-    [0.72, 0.34, 0.56],
-    [2.05, caseH + 0.04, 0.65],
+    [0.74, 0.36, 0.58],
+    [2.08, caseH + 0.16, 0.68],
     { type: 'power_button', label: 'Tombol Power Casing (Uji POST)' },
     'horizontal',
   );
 
   // =========================================================================
-  // KAMERA, ANIMASI & RENDER LOOP (ON-DEMAND + AFTERDRAW SOFTWARE WEBGL)
+  // KAMERA, ANIMASI DROP-IN, EXPLODED VIEW & RENDER LOOP
   // =========================================================================
   let cameraTransitionActive = false;
   let activeCameraPreset: CameraPresetId = 'isometric';
   let lastPhase = initialState.phase;
-  let latchCurrentAngle = initialState.cpuLatchOpen ? -1.15 : 0;
+  let latchCurrentAngle = initialState.cpuLatchOpen ? -1.18 : 0;
+  let explodedCurrent = visualOpts.explodedAmount;
+  let glassSlideCurrent = visualOpts.glassPanelClosed ? 0 : 1;
+  let airflowClock = 0;
   let hoveredKey: string | null = null;
   let disposed = false;
+
+  // Pelacakan animasi drop-in halus saat komponen baru dipasang
+  const installDropProgress = new Map<string, number>();
+  let prevInstalledSet = new Set<PartId>(initialState.installedParts);
 
   const computeCameraPresetTargets = (phase: 'bench' | 'case', preset: CameraPresetId) => {
     if (phase === 'bench') {
       if (preset === 'top') {
-        _targetPos.set(0, 7.6, 0.85);
-        _targetLook.set(0, 0.2, 0);
+        _targetPos.set(0, 7.6, 0.75);
+        _targetLook.set(0, 0.25, 0);
       } else if (preset === 'detail') {
-        _targetPos.set(-1.35, 3.3, 2.35);
-        _targetLook.set(-0.35, 0.32, -0.45);
+        _targetPos.set(-1.35, 3.1, 2.3);
+        _targetLook.set(-0.35, 0.36, -0.45);
+      } else if (preset === 'side') {
+        _targetPos.set(4.6, 2.55, 3.4);
+        _targetLook.set(0, 0.38, 0);
       } else {
-        _targetPos.set(0.35, 5.1, 5.2);
+        _targetPos.set(0.45, 5.1, 5.35);
         _targetLook.set(0, 0.25, 0);
       }
     } else {
       if (preset === 'top') {
-        _targetPos.set(0, 2.25, 9.8);
-        _targetLook.set(0, 2.0, -0.1);
+        _targetPos.set(0, 2.45, 9.9);
+        _targetLook.set(0, 2.25, -0.1);
       } else if (preset === 'detail') {
-        _targetPos.set(0.55, 2.45, 5.4);
-        _targetLook.set(-0.35, 2.25, -0.2);
+        _targetPos.set(0.55, 2.65, 5.4);
+        _targetLook.set(-0.32, 2.45, -0.15);
+      } else if (preset === 'side') {
+        _targetPos.set(-4.2, 3.1, 7.8);
+        _targetLook.set(0, 2.25, -0.1);
       } else {
-        _targetPos.set(2.35, 3.25, 9.6);
-        _targetLook.set(0, 1.95, -0.1);
+        _targetPos.set(2.65, 3.25, 10.85);
+        _targetLook.set(0, 1.72, -0.1);
       }
     }
   };
@@ -1066,6 +1767,7 @@ export function createWorkbench3DController(
 
   // Render pacing & software WebGL fenceSync
   let frameId = 0;
+  let paceTimerId = 0;
   let renderBusy = false;
   let renderDirty = false;
   let lastTickTime = performance.now();
@@ -1082,23 +1784,130 @@ export function createWorkbench3DController(
       }
       const status = sync && gl.getSyncParameter(sync, gl.SYNC_STATUS);
       if (status === gl.UNSIGNALED) {
-        frameId = window.setTimeout(poll, 5);
+        paceTimerId = window.setTimeout(poll, 4);
       } else {
         if (sync) gl.deleteSync(sync);
-        frameId = window.setTimeout(cb, 80);
+        // Jika ada perubahan state baru (pemasangan komponen), render segera tanpa jeda 80 ms
+        const delayMs = renderDirty ? 0 : 80;
+        if (delayMs === 0) {
+          cb();
+        } else {
+          paceTimerId = window.setTimeout(cb, delayMs);
+        }
       }
     };
-    frameId = window.setTimeout(poll, 5);
+    paceTimerId = window.setTimeout(poll, 4);
+  };
+
+  const hasActiveDropAnims = (): boolean => {
+    for (const v of installDropProgress.values()) {
+      if (v > 0.005) return true;
+    }
+    return false;
   };
 
   const needsContinuousFrames = (): boolean => {
-    const latchTarget = currentState.cpuLatchOpen ? -1.15 : 0;
+    const latchTarget = currentState.cpuLatchOpen ? -1.18 : 0;
     const latchMoving = Math.abs(latchCurrentAngle - latchTarget) > 0.008;
+    const explodeMoving = Math.abs(explodedCurrent - visualOpts.explodedAmount) > 0.005;
+    const glassTarget = visualOpts.glassPanelClosed ? 0 : 1;
+    const glassMoving = Math.abs(glassSlideCurrent - glassTarget) > 0.008;
+    const airflowActive = visualOpts.showAirflow && currentState.phase === 'case';
     return (
       cameraTransitionActive ||
       latchMoving ||
+      explodeMoving ||
+      glassMoving ||
+      hasActiveDropAnims() ||
+      airflowActive ||
       (currentState.fansSpinning && currentState.phase === 'case')
     );
+  };
+
+  const applyDynamicTransforms = (dt: number) => {
+    // Engsel tuas soket LGA1700
+    const latchTarget = currentState.cpuLatchOpen ? -1.18 : 0;
+    latchCurrentAngle = isSoftwareGl
+      ? latchTarget
+      : THREE.MathUtils.damp(latchCurrentAngle, latchTarget, 10, dt);
+    latchPivot.rotation.x = latchCurrentAngle;
+
+    // Exploded view damping
+    explodedCurrent = isSoftwareGl
+      ? visualOpts.explodedAmount
+      : THREE.MathUtils.damp(explodedCurrent, visualOpts.explodedAmount, 8, dt);
+
+    // Slide-open tempered glass panel damping
+    const glassTarget = visualOpts.glassPanelClosed ? 0 : 1;
+    glassSlideCurrent = isSoftwareGl
+      ? glassTarget
+      : THREE.MathUtils.damp(glassSlideCurrent, glassTarget, 8, dt);
+
+    // Update drop-in spring progress
+    installDropProgress.forEach((val, key) => {
+      const next = isSoftwareGl ? 0 : THREE.MathUtils.damp(val, 0, 11, dt);
+      installDropProgress.set(key, next < 0.004 ? 0 : next);
+    });
+
+    const drop = (id: string) => installDropProgress.get(id) ?? 0;
+
+    // Posisi komponen Fase 1 dengan Exploded View + Drop-in animation
+    const cpuInstalled = hasPart(currentState, 'cpu');
+    cpuGroup.position.y = cpuInstalled
+      ? moboBaseY + 0.165 + explodedCurrent * 0.45 + drop('cpu') * 0.85
+      : moboBaseY + 0.44;
+    pasteMesh.position.y = moboBaseY + 0.26 + explodedCurrent * 0.72 + drop('thermal_paste') * 0.45;
+    benchCoolerAnchor.position.y =
+      moboBaseY + 0.24 + explodedCurrent * 1.15 + drop('cpu_cooler') * 1.1;
+    benchRamA2.position.y = moboBaseY + 0.44 + explodedCurrent * 0.8 + drop('ram_a2') * 0.75;
+    benchRamB2.position.y = moboBaseY + 0.44 + explodedCurrent * 0.8 + drop('ram_b2') * 0.75;
+    benchSsdGroup.position.y = moboBaseY + 0.185 + explodedCurrent * 0.55 + drop('ssd_nvme') * 0.55;
+
+    // Posisi komponen Fase 2 dengan Exploded View + Drop-in animation
+    psuGroup.position.set(
+      psuBasePos.x - explodedCurrent * 0.55,
+      psuBasePos.y,
+      psuBasePos.z + explodedCurrent * 0.7 + drop('psu') * 0.9,
+    );
+    caseMoboGroup.position.set(
+      caseMoboBasePos.x,
+      caseMoboBasePos.y,
+      caseMoboBasePos.z + explodedCurrent * 0.35 + drop('motherboard') * 0.9,
+    );
+    caseGpuGroup.position.set(
+      caseGpuBasePos.x,
+      caseGpuBasePos.y,
+      caseGpuBasePos.z + explodedCurrent * 1.05 + drop('gpu') * 1.1,
+    );
+
+    // Kaca samping tempered glass
+    glassGroup.visible = currentState.phase === 'case' && glassSlideCurrent < 0.98;
+    glassGroup.position.set(
+      glassSlideCurrent * 1.1,
+      caseH / 2 + 0.14,
+      caseD / 2 + 0.08 + explodedCurrent * 1.45 + glassSlideCurrent * 1.6,
+    );
+    glassPaneMat.opacity = (isSoftwareGl ? 0.24 : 0.92) * (1 - glassSlideCurrent);
+
+    // Aliran udara 3D animasi (panah bergerak sepanjang kurva intake -> exhaust)
+    airflowGroup.visible = visualOpts.showAirflow && currentState.phase === 'case';
+    if (airflowGroup.visible) {
+      airflowClock = (airflowClock + dt * (currentState.fansSpinning ? 0.78 : 0.36)) % 1;
+      for (const item of airflowArrows) {
+        const t = (item.phase + airflowClock) % 1;
+        const pos = item.curve.getPoint(t);
+        const tangent = item.curve.getTangent(t);
+        item.mesh.position.copy(pos);
+        item.mesh.lookAt(pos.x + tangent.x, pos.y + tangent.y, pos.z + tangent.z);
+      }
+    }
+
+    // Putaran kipas casing, cooler, & GPU saat POST berhasil
+    if (currentState.fansSpinning && currentState.phase === 'case') {
+      for (const rotor of caseFans) {
+        rotor.rotation.z -= dt * 13.5;
+      }
+    }
   };
 
   const requestRender = () => {
@@ -1115,33 +1924,20 @@ export function createWorkbench3DController(
       const dt = Math.min((now - lastTickTime) / 1000, 0.1);
       lastTickTime = now;
 
-      // Animasi engsel tuas soket LGA1700
-      const latchTarget = currentState.cpuLatchOpen ? -1.15 : 0;
-      latchCurrentAngle = isSoftwareGl
-        ? latchTarget
-        : THREE.MathUtils.damp(latchCurrentAngle, latchTarget, 10, dt);
-      latchPivot.rotation.x = latchCurrentAngle;
+      applyDynamicTransforms(dt);
 
-      // Putaran kipas casing & GPU saat POST berhasil
-      if (currentState.fansSpinning && currentState.phase === 'case') {
-        for (const rotor of caseFans) {
-          rotor.rotation.z -= dt * 11.5;
-        }
-      }
-
-      // Transisi preset kamera halus (snap langsung pada software WebGL agar bebas jeda frame)
       if (cameraTransitionActive) {
         if (isSoftwareGl) {
           camera.position.copy(_targetPos);
           controls.target.copy(_targetLook);
           cameraTransitionActive = false;
         } else {
-          camera.position.x = THREE.MathUtils.damp(camera.position.x, _targetPos.x, 7, dt);
-          camera.position.y = THREE.MathUtils.damp(camera.position.y, _targetPos.y, 7, dt);
-          camera.position.z = THREE.MathUtils.damp(camera.position.z, _targetPos.z, 7, dt);
-          controls.target.x = THREE.MathUtils.damp(controls.target.x, _targetLook.x, 7, dt);
-          controls.target.y = THREE.MathUtils.damp(controls.target.y, _targetLook.y, 7, dt);
-          controls.target.z = THREE.MathUtils.damp(controls.target.z, _targetLook.z, 7, dt);
+          camera.position.x = THREE.MathUtils.damp(camera.position.x, _targetPos.x, 7.5, dt);
+          camera.position.y = THREE.MathUtils.damp(camera.position.y, _targetPos.y, 7.5, dt);
+          camera.position.z = THREE.MathUtils.damp(camera.position.z, _targetPos.z, 7.5, dt);
+          controls.target.x = THREE.MathUtils.damp(controls.target.x, _targetLook.x, 7.5, dt);
+          controls.target.y = THREE.MathUtils.damp(controls.target.y, _targetLook.y, 7.5, dt);
+          controls.target.z = THREE.MathUtils.damp(controls.target.z, _targetLook.z, 7.5, dt);
 
           if (
             camera.position.distanceToSquared(_targetPos) < 0.0008 &&
@@ -1177,12 +1973,53 @@ export function createWorkbench3DController(
     requestRender();
   });
 
-  // Sinkronisasi state React -> 3D Scene
+  const applyVisualOptions = () => {
+    // Tema warna casing
+    const finish = CASE_FINISH_COLORS[visualOpts.caseFinish];
+    caseChassisMat.color.setHex(finish.chassis);
+    caseChassisMat.roughness = finish.roughness;
+    caseChassisMat.metalness = finish.metalness;
+    caseShroudMat.color.setHex(finish.shroud);
+
+    // Tema pencahayaan studio vs bengkel gelap RGB
+    const isDarkRgb = visualOpts.studioLight === 'dark_rgb';
+    const bgHex = isDarkRgb ? 0x050914 : 0x0d1626;
+    scene.background = new THREE.Color(bgHex);
+    scene.fog = new THREE.FogExp2(bgHex, 0.025);
+    keyLight.intensity = isDarkRgb ? 1.05 : 1.95;
+    hemiLight.intensity = isDarkRgb ? 0.45 : 0.92;
+    rimLight.intensity = isDarkRgb ? 1.15 : 0.8;
+
+    // Warna RGB & cahaya interior
+    const rgbHex = RGB_THEME_HEX[visualOpts.rgbTheme];
+    const rgbOn = visualOpts.rgbTheme !== 'off';
+    const powerBoost = currentState.fansSpinning || isDarkRgb ? 1.25 : 0.55;
+    rgbEmissiveMat.color.setHex(rgbHex);
+    rgbEmissiveMat.emissive.setHex(rgbOn ? rgbHex : 0x000000);
+    rgbEmissiveMat.emissiveIntensity = rgbOn ? powerBoost : 0;
+
+    caseRgbLight.color.setHex(rgbHex);
+    caseRgbLight.intensity =
+      rgbOn && currentState.phase === 'case' && (currentState.fansSpinning || isDarkRgb)
+        ? 3.2
+        : 0;
+  };
+
+  // Sinkronisasi state React -> 3D Scene + model dinamis sesuai SKU
   const syncSceneVisuals = (state: AssemblyState) => {
+    // Deteksi part yang baru saja dipasang untuk memicu animasi drop-in halus
+    for (const partId of state.installedParts) {
+      if (!prevInstalledSet.has(partId)) {
+        installDropProgress.set(partId, 1.0);
+      }
+    }
+    prevInstalledSet = new Set(state.installedParts);
+
     currentState = state;
     const isBench = state.phase === 'bench';
     benchGroup.visible = isBench;
     caseGroup.visible = !isBench;
+    propsGroup.visible = isBench;
 
     if (state.phase !== lastPhase) {
       lastPhase = state.phase;
@@ -1190,6 +2027,78 @@ export function createWorkbench3DController(
       computeCameraPresetTargets(state.phase, 'isometric');
       cameraTransitionActive = true;
     }
+
+    // 1. Update label CPU IHS jika SKU CPU berubah
+    const cpuInfo = getEffectivePartInfo(state, 'cpu');
+    if (cpuInfo.shortCode !== activeCpuCode) {
+      activeCpuCode = cpuInfo.shortCode;
+      const nextTex = createDynamicCpuIhsTexture(cpuInfo.shortCode, cpuInfo.model, maxAniso);
+      dynamicTextures.push(nextTex);
+      cpuIhsMat.map = nextTex;
+      cpuIhsMat.needsUpdate = true;
+    }
+
+    // 2. Update label PSU jika kapasitas PSU berubah
+    const psuCap = getPsuCapacityWatts(state);
+    if (psuCap !== activePsuCap) {
+      activePsuCap = psuCap;
+      const psuSku = getPurchasedSku(state, 'psu');
+      const tierText = (psuSku?.psuEfficiencyTier ?? '80+ Gold').toUpperCase();
+      const accentColor =
+        psuCap >= 1000 ? '#38bdf8' : psuCap >= 850 ? '#e2e8f0' : psuCap >= 650 ? '#f59e0b' : '#b45309';
+      const nextPsuTex = createDynamicBadgeTexture(
+        `${psuCap}W`,
+        tierText,
+        '#0f172a',
+        accentColor,
+        '#f8fafc',
+        maxAniso,
+      );
+      dynamicTextures.push(nextPsuTex);
+      psuBadgeMat.map = nextPsuTex;
+      psuBadgeMat.needsUpdate = true;
+    }
+
+    // 3. Pilih varian 3D Pendingin CPU sesuai SKU yang dibeli
+    const coolerSkuId = state.purchasedModules.cpu_cooler;
+    const coolerVariant: 'stock' | 'tower' | 'dual' | 'aio' =
+      coolerSkuId === 'cooler_stock'
+        ? 'stock'
+        : coolerSkuId === 'cooler_dual_240'
+          ? 'dual'
+          : coolerSkuId === 'cooler_aio_240'
+            ? 'aio'
+            : 'tower';
+    (['stock', 'tower', 'dual', 'aio'] as const).forEach((key) => {
+      benchCoolerVariants[key].group.visible = key === coolerVariant;
+      caseCoolerVariants[key].group.visible = key === coolerVariant;
+    });
+
+    // 4. Pilih warna heatspreader RAM sesuai kelas SKU
+    const ramSku = getPurchasedSku(state, 'ram_a2') ?? getPurchasedSku(state, 'ram_b2');
+    if (ramSku?.tier === 'hemat') {
+      ramHeatspreaderMat.color.setHex(0x1e293b);
+    } else if (ramSku?.tier === 'pro') {
+      ramHeatspreaderMat.color.setHex(0xcbd5e1);
+    } else {
+      ramHeatspreaderMat.color.setHex(0x1d4ed8);
+    }
+
+    // 5. Heatsink SSD Pro hanya muncul pada SSD 2 TB / 4 TB
+    const ssdSku = getPurchasedSku(state, 'ssd_nvme');
+    ssdProHeatsink.visible = (ssdSku?.ssdGb ?? 0) >= 2000;
+
+    // 6. Varian 3D GPU sesuai SKU yang dibeli (Compact / Dual / Flagship Triple-Fan)
+    const gpuSkuId = state.purchasedModules.gpu;
+    const gpuTier: 'compact' | 'dual' | 'triple' =
+      gpuSkuId === 'gpu_4060'
+        ? 'compact'
+        : gpuSkuId === 'gpu_4070ti' || gpuSkuId === 'gpu_4080s' || gpuSkuId === 'gpu_4090'
+          ? 'triple'
+          : 'dual';
+    (['compact', 'dual', 'triple'] as const).forEach((key) => {
+      gpuVariants[key].visible = key === gpuTier;
+    });
 
     const cpuInstalled = hasPart(state, 'cpu');
     const pasteApplied = hasPart(state, 'thermal_paste');
@@ -1205,19 +2114,16 @@ export function createWorkbench3DController(
     const cable8CpuInstalled = hasPart(state, 'cable_8pin_cpu');
     const cable8GpuInstalled = hasPart(state, 'cable_8pin_gpu');
 
-    // Fase 1 visibilitas komponen
+    // Fase 1 visibilitas
     const showCpuPreview = isBench && !cpuInstalled && state.selectedPart === 'cpu';
     cpuGroup.visible = cpuInstalled || showCpuPreview;
-    cpuGroup.position.y = cpuInstalled ? moboBaseY + 0.16 : moboBaseY + 0.42;
     cpuGroup.rotation.y = THREE.MathUtils.degToRad(cpuInstalled ? 0 : -state.cpuRotation);
-
     pasteMesh.visible = pasteApplied && !coolerInstalled;
-    benchCoolerGroup.visible = coolerInstalled;
+    benchCoolerAnchor.visible = coolerInstalled;
     benchRamA2.visible = ramA2Installed;
     benchRamB2.visible = ramB2Installed;
     benchSsdGroup.visible = ssdInstalled;
 
-    // Update target slot CPU zone sesuai progres
     const activeCpuSlot: SlotId = !cpuInstalled
       ? 'socket_cpu'
       : !pasteApplied
@@ -1228,7 +2134,7 @@ export function createWorkbench3DController(
       : !pasteApplied
         ? 'Permukaan CPU (IHS) — Oleskan Pasta Termal'
         : !coolerInstalled
-          ? 'Dudukan Pendingin CPU — Pasang Air Cooler'
+          ? 'Dudukan Pendingin CPU — Pasang Pendingin'
           : 'Pendingin CPU Terpasang';
     benchCpuZoneHit.userData.action = {
       type: 'slot',
@@ -1237,13 +2143,15 @@ export function createWorkbench3DController(
     };
     benchLatchHit.visible = !coolerInstalled;
 
-    // Fase 2 visibilitas komponen
+    // Fase 2 visibilitas
     psuGroup.visible = psuInstalled;
     psuSwitchMat.color.setHex(state.psuSwitchOn ? 0x22c55e : 0x475569);
     psuSwitchMat.emissive.setHex(state.psuSwitchOn ? 0x16a34a : 0x000000);
     psuSwitchMat.emissiveIntensity = state.psuSwitchOn ? 0.95 : 0;
+    psuSwitchMesh.rotation.x = state.psuSwitchOn ? -0.22 : 0.22;
 
     caseMoboGroup.visible = moboInstalled;
+    aioRadiatorGroup.visible = moboInstalled && coolerVariant === 'aio';
     caseGpuGroup.visible = gpuInstalled;
     cable24Mesh.visible = cable24Installed;
     cable8CpuMesh.visible = cable8CpuInstalled;
@@ -1256,13 +2164,12 @@ export function createWorkbench3DController(
     powerBtnMat.color.setHex(state.fansSpinning ? 0x10b981 : 0x3b82f6);
     powerBtnMat.emissive.setHex(state.fansSpinning ? 0x059669 : 0x1d4ed8);
 
-    // Hitbox fase 2 yang aktif sesuai urutan fisik
     casePsuHit.userData.action = psuInstalled
       ? {
           type: 'psu_switch',
-          label: `Sakelar PSU (${state.psuSwitchOn ? 'ON' : 'OFF'}) — Klik untuk mengubah`,
+          label: `Sakelar PSU ${psuCap} W (${state.psuSwitchOn ? 'ON' : 'OFF'}) — Klik untuk mengubah`,
         }
-      : { type: 'slot', slotId: 'psu_bay', label: 'Ruang PSU ATX (650 W)' };
+      : { type: 'slot', slotId: 'psu_bay', label: `Ruang PSU ATX (${psuCap} W)` };
     caseMoboHit.visible = !moboInstalled;
     caseGpuHit.visible = moboInstalled && !gpuInstalled;
     case24Hit.visible = moboInstalled;
@@ -1273,16 +2180,17 @@ export function createWorkbench3DController(
     (['CPU', 'DRAM', 'VGA', 'BOOT'] as PostLedKey[]).forEach((ledKey) => {
       const mat = postLedMaterials.get(ledKey);
       if (!mat) return;
-      const isFault = state.postResult && !state.postResult.passed && state.postResult.faultLed === ledKey;
+      const isFault =
+        state.postResult && !state.postResult.passed && state.postResult.faultLed === ledKey;
       const isPass = state.postResult?.passed;
       if (isFault) {
         mat.color.setHex(0xef4444);
         mat.emissive.setHex(0xdc2626);
-        mat.emissiveIntensity = 1.4;
+        mat.emissiveIntensity = 1.5;
       } else if (isPass) {
         mat.color.setHex(0x10b981);
         mat.emissive.setHex(0x059669);
-        mat.emissiveIntensity = 1.1;
+        mat.emissiveIntensity = 1.2;
       } else {
         mat.color.setHex(0x334155);
         mat.emissive.setHex(0x000000);
@@ -1290,7 +2198,7 @@ export function createWorkbench3DController(
       }
     });
 
-    // Update highlight frame untuk hint BIMO, hover, error, dan Part Rusak
+    // Update highlight frame hint / hover / error / Part Rusak
     const hint = getActiveHintTarget(state);
     const slotKeyToPart: Record<string, PartId | undefined> = {
       cpu_zone: !cpuInstalled ? 'cpu' : !pasteApplied ? 'thermal_paste' : 'cpu_cooler',
@@ -1337,16 +2245,20 @@ export function createWorkbench3DController(
       }
     });
 
+    applyVisualOptions();
     requestRender();
   };
 
   // =========================================================================
-  // RAYCASTING INTERAKSI (HOVER, KLIK, DAN DROP KOMPONEN KE 3D)
+  // RAYCASTING INTERAKSI
   // =========================================================================
   const raycaster = new THREE.Raycaster();
   raycaster.layers.set(1);
 
-  const pickHitTarget = (clientX: number, clientY: number): { key: string; action: HitTargetAction } | null => {
+  const pickHitTarget = (
+    clientX: number,
+    clientY: number,
+  ): { key: string; action: HitTargetAction } | null => {
     const rect = renderer.domElement.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) return null;
     _pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
@@ -1392,7 +2304,7 @@ export function createWorkbench3DController(
   const onPointerUp = (event: PointerEvent) => {
     const dx = event.clientX - pointerDownX;
     const dy = event.clientY - pointerDownY;
-    if (Math.hypot(dx, dy) > 6) return; // Abaikan jika pengguna sedang memutar orbit kamera
+    if (Math.hypot(dx, dy) > 6) return;
 
     const hit = pickHitTarget(event.clientX, event.clientY);
     if (!hit) return;
@@ -1413,7 +2325,6 @@ export function createWorkbench3DController(
   renderer.domElement.addEventListener('pointermove', onPointerMove);
   renderer.domElement.addEventListener('pointerup', onPointerUp);
 
-  // ResizeObserver menjaga ukuran & rasio aspek tetap tajam
   const resizeObserver = new ResizeObserver(() => {
     if (disposed) return;
     const w = Math.max(container.clientWidth, 300);
@@ -1425,7 +2336,6 @@ export function createWorkbench3DController(
   });
   resizeObserver.observe(container);
 
-  // Pre-warm shader pada GPU asli
   if (!isSoftwareGl) {
     renderer.compile(scene, camera);
   }
@@ -1434,6 +2344,11 @@ export function createWorkbench3DController(
   return {
     syncState: (nextState: AssemblyState) => {
       syncSceneVisuals(nextState);
+    },
+    setVisualOptions: (nextOptions: SceneVisualOptions) => {
+      visualOpts = { ...nextOptions };
+      applyVisualOptions();
+      requestRender();
     },
     setCameraPreset: (preset: CameraPresetId) => {
       activeCameraPreset = preset;
@@ -1447,7 +2362,6 @@ export function createWorkbench3DController(
         callbacksRef.current.onSlotInteract(hit.action.slotId, partId);
         return;
       }
-      // Jika dilepas di dekat area papan 3D tapi meleset sedikit, jatuhkan ke slot sesuai part bila berada di fase aktif
       const fallbackSlot: SlotId | null =
         currentState.phase === 'bench'
           ? partId === 'cpu'
@@ -1483,18 +2397,15 @@ export function createWorkbench3DController(
     dispose: () => {
       disposed = true;
       cancelAnimationFrame(frameId);
-      window.clearTimeout(frameId);
+      window.clearTimeout(paceTimerId);
       resizeObserver.disconnect();
       renderer.domElement.removeEventListener('pointerdown', onPointerDown);
       renderer.domElement.removeEventListener('pointermove', onPointerMove);
       renderer.domElement.removeEventListener('pointerup', onPointerUp);
       controls.dispose();
       envTex.dispose();
-      esdTex.dispose();
-      pcbTex.dispose();
-      cpuLabelTex.dispose();
-      psuTex.dispose();
-      contactTex.dispose();
+      disposeProceduralTexturePack(texPack);
+      dynamicTextures.forEach((t) => t.dispose());
       scene.traverse((obj) => {
         if (obj instanceof THREE.Mesh) {
           obj.geometry.dispose();

@@ -26,7 +26,9 @@ export type ShopCategory =
 export type ClientOrderId =
   | 'kantor_hemat'
   | 'gaming_efisien'
+  | 'streaming_rgb'
   | 'workstation_pro'
+  | 'ai_dev_rig'
   | 'rakit_bebas';
 
 export interface CatalogModuleSpec {
@@ -40,7 +42,7 @@ export interface CatalogModuleSpec {
   price: number; // Rupiah bilangan bulat
   wattage: number; // Beban daya (Watt)
   psuCapacityWatts?: number;
-  psuEfficiencyTier?: '80+ Bronze' | '80+ Gold' | '80+ Platinum';
+  psuEfficiencyTier?: '80+ Bronze' | '80+ Gold' | '80+ Platinum' | '80+ Titanium';
   ramGb?: number;
   ramSpeedMhz?: number;
   ssdGb?: number;
@@ -49,6 +51,24 @@ export interface CatalogModuleSpec {
   performanceScore: number;
   tier: 'hemat' | 'menengah' | 'pro';
   note: string;
+}
+
+export interface SavedBuildRecord {
+  id: string;
+  completedAtIso: string;
+  orderId: ClientOrderId;
+  orderTitle: string;
+  clientName: string;
+  totalSpent: number;
+  serviceFeeEarned: number;
+  benchmarkScore: number;
+  totalWatts: number;
+  psuCapacityWatts: number;
+  cpuModel: string;
+  gpuModel: string;
+  coolerModel: string;
+  ramLabel: string;
+  ssdModel: string;
 }
 
 export interface ClientOrderRequirements {
@@ -187,6 +207,21 @@ export const SHOP_CATALOG: CatalogModuleSpec[] = [
     tier: 'pro',
     note: '20 core bertenaga untuk render 4K; butuh pendingin dan PSU besar.',
   },
+  {
+    skuId: 'cpu_i9_14900k',
+    slotFamily: 'cpu',
+    shopCategory: 'cpu',
+    name: 'Prosesor Core i9-14900K',
+    model: 'Core i9-14900K',
+    shortCode: 'i9-14K',
+    specLine: 'LGA1700 · 24 Core · 253 W',
+    price: 9400000,
+    wattage: 253,
+    baseIdleTempC: 45,
+    performanceScore: 100,
+    tier: 'pro',
+    note: 'Prosesor kelas puncak 24 core; wajib dipasangkan Liquid AIO 240 mm atau Dual-Tower.',
+  },
 
   // PASTA TERMAL
   {
@@ -265,6 +300,21 @@ export const SHOP_CATALOG: CatalogModuleSpec[] = [
     performanceScore: 8,
     tier: 'pro',
     note: 'Menjaga suhu CPU 20 core tetap rendah saat render berat.',
+  },
+  {
+    skuId: 'cooler_aio_240',
+    slotFamily: 'cpu_cooler',
+    shopCategory: 'cooling',
+    name: 'Liquid Cooler AIO 240 mm',
+    model: 'HydroFrost AIO 240 RGB',
+    shortCode: 'AIO-240',
+    specLine: 'Radiator 240 mm · Pompa RGB · 12 W',
+    price: 1850000,
+    wattage: 12,
+    tempOffsetC: -9,
+    performanceScore: 10,
+    tier: 'pro',
+    note: 'Pendingin cair all-in-one dengan selang braided dan radiator atas untuk suhu paling dingin.',
   },
 
   // MEMORI RAM DDR5 (DIJUAL PER KEPING / BISA BELI 2 KEPING DUAL-CHANNEL)
@@ -363,6 +413,21 @@ export const SHOP_CATALOG: CatalogModuleSpec[] = [
     tier: 'pro',
     note: 'Ruang simpan ekstra luas untuk bahan video 4K dan pustaka besar.',
   },
+  {
+    skuId: 'ssd_4tb_gen4',
+    slotFamily: 'ssd_nvme',
+    shopCategory: 'ssd_nvme',
+    name: 'SSD NVMe 4 TB Gen4 Ultra',
+    model: 'Gen4 Ultra NVMe 4 TB',
+    shortCode: 'NVMe 4TB',
+    specLine: 'M.2 2280 · 7.350 MB/s · 9 W',
+    price: 4400000,
+    wattage: 9,
+    ssdGb: 4000,
+    performanceScore: 10,
+    tier: 'pro',
+    note: 'Kapasitas masif 4 TB dengan heatsink aluminium untuk dataset AI dan arsip RAW.',
+  },
 
   // POWER SUPPLY (PSU)
   {
@@ -412,6 +477,22 @@ export const SHOP_CATALOG: CatalogModuleSpec[] = [
     performanceScore: 8,
     tier: 'pro',
     note: 'Cadangan daya luas dan stabil untuk prosesor i7 serta RTX 4080 Super.',
+  },
+  {
+    skuId: 'psu_1000_titanium',
+    slotFamily: 'psu',
+    shopCategory: 'psu',
+    name: 'PSU 1000 W 80+ Titanium',
+    model: '1000 W 80+ Titanium Modular',
+    shortCode: '1000W TI',
+    specLine: 'ATX 3.0 · 1000 W · Efisiensi 94%',
+    price: 3650000,
+    wattage: 0,
+    psuCapacityWatts: 1000,
+    psuEfficiencyTier: '80+ Titanium',
+    performanceScore: 10,
+    tier: 'pro',
+    note: 'Efisiensi tertinggi dan daya penuh 1000 W untuk Core i9 dan RTX 4090.',
   },
 
   // MOTHERBOARD ATX (TERMASUK SET KABEL DAYA MODULAR)
@@ -474,6 +555,20 @@ export const SHOP_CATALOG: CatalogModuleSpec[] = [
     note: 'Performa tinggi untuk 1440p dengan konsumsi daya 200 W yang seimbang.',
   },
   {
+    skuId: 'gpu_4070ti',
+    slotFamily: 'gpu',
+    shopCategory: 'gpu',
+    name: 'GPU RTX 4070 Ti Super',
+    model: 'RTX 4070 Ti Super 16 GB',
+    shortCode: 'RTX 4070Ti',
+    specLine: 'PCIe 4.0 x16 · 16 GB · 285 W',
+    price: 13200000,
+    wattage: 285,
+    performanceScore: 92,
+    tier: 'pro',
+    note: 'Tiga kipas dengan VRAM 16 GB, tangguh untuk esports 240Hz dan streaming 1440p.',
+  },
+  {
     skuId: 'gpu_4080s',
     slotFamily: 'gpu',
     shopCategory: 'gpu',
@@ -486,6 +581,20 @@ export const SHOP_CATALOG: CatalogModuleSpec[] = [
     performanceScore: 98,
     tier: 'pro',
     note: 'Kelas workstation & 4K dengan kebutuhan daya besar (rekomendasi PSU 850 W).',
+  },
+  {
+    skuId: 'gpu_4090',
+    slotFamily: 'gpu',
+    shopCategory: 'gpu',
+    name: 'GPU RTX 4090 Flagship',
+    model: 'RTX 4090 Flagship 24 GB',
+    shortCode: 'RTX 4090',
+    specLine: 'PCIe 4.0 x16 · 24 GB · 450 W',
+    price: 26500000,
+    wattage: 450,
+    performanceScore: 100,
+    tier: 'pro',
+    note: 'Kartu grafis paling bertenaga dengan 24 GB VRAM untuk AI lokal & 4K Ray Tracing (wajib PSU 1000 W).',
   },
 ];
 
@@ -551,6 +660,35 @@ export const CLIENT_ORDERS: Record<ClientOrderId, ClientOrderSpec> = {
       gpu: 'gpu_4070',
     },
   },
+  streaming_rgb: {
+    id: 'streaming_rgb',
+    clientName: 'Nadia — Streamer Esports',
+    title: 'PC Streaming & Esports 240Hz',
+    shortLabel: 'Streaming · Rp30 jt',
+    brief: 'Butuh PC dingin dengan Liquid AIO, RAM 32 GB Dual-Channel, SSD 2 TB, dan performa tinggi untuk gim + live stream.',
+    budget: 30000000,
+    serviceFee: 3000000,
+    isSandbox: false,
+    requirements: {
+      minRamGb: 32,
+      requireDualChannel: true,
+      minSsdGb: 2000,
+      minBenchmark: 88,
+      minPsuWatts: 850,
+      maxPsuLoadPercent: 80,
+    },
+    recommendedLoadout: {
+      cpu: 'cpu_i5_14600k',
+      thermal_paste: 'paste_nth2',
+      cpu_cooler: 'cooler_aio_240',
+      ram_a2: 'ram_16gb_5600',
+      ram_b2: 'ram_16gb_5600',
+      ssd_nvme: 'ssd_2tb_gen4',
+      psu: 'psu_850_plat',
+      motherboard: 'mobo_b760_pro',
+      gpu: 'gpu_4070ti',
+    },
+  },
   workstation_pro: {
     id: 'workstation_pro',
     clientName: 'Lensa Produksi 4K',
@@ -580,13 +718,42 @@ export const CLIENT_ORDERS: Record<ClientOrderId, ClientOrderSpec> = {
       gpu: 'gpu_4080s',
     },
   },
+  ai_dev_rig: {
+    id: 'ai_dev_rig',
+    clientName: 'Lab Riset Data Nusantara',
+    title: 'Mesin Kompilasi & AI Lokal',
+    shortLabel: 'AI Flagship · Rp58 jt',
+    brief: 'Membutuhkan RAM 64 GB Dual-Channel, SSD 4 TB, performa 96+, dan PSU 1000 W untuk pelatihan model AI lokal.',
+    budget: 58000000,
+    serviceFee: 5500000,
+    isSandbox: false,
+    requirements: {
+      minRamGb: 64,
+      requireDualChannel: true,
+      minSsdGb: 4000,
+      minBenchmark: 96,
+      minPsuWatts: 1000,
+      maxPsuLoadPercent: 80,
+    },
+    recommendedLoadout: {
+      cpu: 'cpu_i9_14900k',
+      thermal_paste: 'paste_nth2',
+      cpu_cooler: 'cooler_aio_240',
+      ram_a2: 'ram_32gb_6400',
+      ram_b2: 'ram_32gb_6400',
+      ssd_nvme: 'ssd_4tb_gen4',
+      psu: 'psu_1000_titanium',
+      motherboard: 'mobo_b760_pro',
+      gpu: 'gpu_4090',
+    },
+  },
   rakit_bebas: {
     id: 'rakit_bebas',
     clientName: 'Meja Eksperimen Pribadi',
     title: 'Rakit Bebas (Sandbox)',
-    shortLabel: 'Rakit Bebas · Rp40 jt',
-    brief: 'Bebas belanja dan meracik kombinasi modul sesukamu tanpa target wajib dan tanpa tekanan waktu.',
-    budget: 40000000,
+    shortLabel: 'Rakit Bebas · Rp65 jt',
+    brief: 'Anggaran lega Rp65 jt untuk meracik kombinasi impian (termasuk Core i9, Liquid AIO, dan RTX 4090) tanpa tekanan waktu.',
+    budget: 65000000,
     serviceFee: 0,
     isSandbox: true,
     requirements: {},
@@ -607,7 +774,9 @@ export const CLIENT_ORDERS: Record<ClientOrderId, ClientOrderSpec> = {
 export const CLIENT_ORDER_LIST: ClientOrderSpec[] = [
   CLIENT_ORDERS.gaming_efisien,
   CLIENT_ORDERS.kantor_hemat,
+  CLIENT_ORDERS.streaming_rgb,
   CLIENT_ORDERS.workstation_pro,
+  CLIENT_ORDERS.ai_dev_rig,
   CLIENT_ORDERS.rakit_bebas,
 ];
 
@@ -863,3 +1032,32 @@ export function saveWorkshopWallet(wallet: WorkshopWallet): void {
     // Abaikan jika penyimpanan lokal tidak tersedia
   }
 }
+
+export const BUILD_GALLERY_STORAGE_KEY = 'rakitpc_lab_gallery_v1';
+
+export function loadSavedBuilds(): SavedBuildRecord[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(BUILD_GALLERY_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.slice(0, 12) as SavedBuildRecord[];
+  } catch {
+    return [];
+  }
+}
+
+export function saveCompletedBuild(record: SavedBuildRecord): SavedBuildRecord[] {
+  const existing = loadSavedBuilds();
+  const next = [record, ...existing].slice(0, 12);
+  if (typeof window !== 'undefined') {
+    try {
+      window.localStorage.setItem(BUILD_GALLERY_STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      // Abaikan jika penyimpanan lokal tidak tersedia
+    }
+  }
+  return next;
+}
+

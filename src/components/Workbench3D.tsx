@@ -1,13 +1,27 @@
-/* Komponen pembungkus kanvas 3D WebGL (Three.js) dengan dok kontrol kamera bawah yang dapat dilipat dan dukungan seret-lepas */
+/* Komponen pembungkus kanvas 3D WebGL (Three.js) realistis dengan dok kontrol bawah terpadu untuk kamera, kaca tempered, aliran udara 3D, mode terurai, warna casing, dan lampu RGB */
 
-import { Camera, ChevronDown, ChevronUp, Rotate3d } from 'lucide-react';
+import {
+  Camera,
+  ChevronDown,
+  ChevronUp,
+  Layers,
+  Palette,
+  Rotate3d,
+  Shield,
+  Sun,
+  Wind,
+} from 'lucide-react';
 import type { DragEvent } from 'react';
 import { useEffect, useRef, useState } from 'react';
 import { PARTS_BY_ID, type PartId, type SlotId } from '../config';
 import { hasPart, type AssemblyState } from '../lib/assemblyEngine';
 import {
   createWorkbench3DController,
+  DEFAULT_SCENE_VISUAL_OPTIONS,
   type CameraPresetId,
+  type CaseFinishId,
+  type RgbThemeId,
+  type SceneVisualOptions,
   type Workbench3DCallbacks,
   type Workbench3DController,
 } from '../lib/workbench3dScene';
@@ -22,8 +36,23 @@ interface Workbench3DProps {
 
 const CAMERA_PRESETS: { id: CameraPresetId; label: string }[] = [
   { id: 'isometric', label: 'Isometrik' },
-  { id: 'top', label: 'Depan / Atas' },
+  { id: 'top', label: 'Depan' },
   { id: 'detail', label: 'Dekat' },
+  { id: 'side', label: 'Samping' },
+];
+
+const CASE_FINISH_OPTIONS: { id: CaseFinishId; label: string; dotClass: string }[] = [
+  { id: 'carbon', label: 'Karbon', dotClass: 'bg-slate-800 border-slate-500' },
+  { id: 'white', label: 'Putih', dotClass: 'bg-slate-100 border-slate-400' },
+  { id: 'titanium', label: 'Titanium', dotClass: 'bg-slate-500 border-slate-300' },
+];
+
+const RGB_THEME_OPTIONS: { id: RgbThemeId; label: string; dotClass: string }[] = [
+  { id: 'blue', label: 'Biru', dotClass: 'bg-blue-500' },
+  { id: 'cyan', label: 'Cyan', dotClass: 'bg-cyan-400' },
+  { id: 'emerald', label: 'Hijau', dotClass: 'bg-emerald-500' },
+  { id: 'amber', label: 'Amber', dotClass: 'bg-amber-400' },
+  { id: 'off', label: 'Mati', dotClass: 'bg-slate-700' },
 ];
 
 export function Workbench3D({
@@ -38,7 +67,11 @@ export function Workbench3D({
   const [hoveredLabel, setHoveredLabel] = useState<string | null>(null);
   const [activePreset, setActivePreset] = useState<CameraPresetId>('isometric');
   const [dockExpanded, setDockExpanded] = useState(true);
+  const [showStyleTools, setShowStyleTools] = useState(false);
   const [dragHover, setDragHover] = useState(false);
+  const [visualOptions, setVisualOptions] = useState<SceneVisualOptions>(
+    DEFAULT_SCENE_VISUAL_OPTIONS,
+  );
 
   const callbacksRef = useRef<Workbench3DCallbacks>({
     onSlotInteract,
@@ -62,7 +95,7 @@ export function Workbench3D({
   useEffect(() => {
     const container = mountRef.current;
     if (!container) return;
-    const ctrl = createWorkbench3DController(container, state, callbacksRef);
+    const ctrl = createWorkbench3DController(container, state, callbacksRef, visualOptions);
     controllerRef.current = ctrl;
     return () => {
       ctrl.dispose();
@@ -75,6 +108,11 @@ export function Workbench3D({
   useEffect(() => {
     controllerRef.current?.syncState(state);
   }, [state]);
+
+  // Sinkronkan opsi kustomisasi 3D (kaca tempered, aliran udara, mode terurai, warna casing & RGB)
+  useEffect(() => {
+    controllerRef.current?.setVisualOptions(visualOptions);
+  }, [visualOptions]);
 
   const handleCameraPreset = (preset: CameraPresetId) => {
     setActivePreset(preset);
@@ -97,7 +135,6 @@ export function Workbench3D({
     }
   };
 
-  // Daftar tombol slot cepat aksesibel sesuai fase aktif (untuk keyboard & layar sentuh)
   const cpuInstalled = hasPart(state, 'cpu');
   const pasteApplied = hasPart(state, 'thermal_paste');
   const coolerInstalled = hasPart(state, 'cpu_cooler');
@@ -113,7 +150,7 @@ export function Workbench3D({
               ? 'Soket CPU LGA1700 — Pasang Prosesor'
               : !pasteApplied
                 ? 'Permukaan Logam CPU (IHS) — Oleskan Pasta Termal'
-                : 'Dudukan Pendingin CPU — Pasang Air Cooler',
+                : 'Dudukan Pendingin CPU — Pasang Pendingin',
             onClick: () =>
               onSlotInteract(
                 !cpuInstalled ? 'socket_cpu' : !pasteApplied ? 'cpu_ihs' : 'cooler_mount',
@@ -140,7 +177,7 @@ export function Workbench3D({
             ? [
                 {
                   label: 'PSU',
-                  ariaLabel: 'Ruang PSU bawah casing, klik untuk memasang PSU 650 W',
+                  ariaLabel: 'Ruang PSU bawah casing, klik untuk memasang PSU',
                   onClick: () => onSlotInteract('psu_bay'),
                 },
               ]
@@ -224,11 +261,11 @@ export function Workbench3D({
       {/* Lencana info sudut kiri atas (bebas halangan tengah & tanpa backdrop-blur) */}
       <div className="pointer-events-none absolute top-2.5 left-2.5 flex items-center gap-1.5 rounded-lg bg-slate-950/90 border border-slate-700 px-2.5 py-1 text-[11px] font-mono text-slate-200">
         <Rotate3d className="w-3.5 h-3.5 text-sky-400 shrink-0" aria-hidden="true" />
-        <span>{hoveredLabel ?? 'Seret untuk putar 3D · Gulir untuk zoom · Klik slot'}</span>
+        <span>{hoveredLabel ?? 'Seret putar 3D · Gulir zoom · Klik slot'}</span>
       </div>
 
       {/* Dok Kontrol Bawah Terpadu yang dapat dilipat (zero viewport occlusion) */}
-      <div className="absolute bottom-2 left-1/2 -translate-x-1/2 w-[96%] max-w-[620px] flex flex-col items-center gap-1 pointer-events-none">
+      <div className="absolute bottom-2 left-1/2 -translate-x-1/2 w-[96%] max-w-[650px] flex flex-col items-center gap-1 pointer-events-none">
         <button
           type="button"
           onClick={() => setDockExpanded((prev) => !prev)}
@@ -249,42 +286,187 @@ export function Workbench3D({
         </button>
 
         {dockExpanded && (
-          <div className="pointer-events-auto w-full rounded-xl bg-slate-950/95 border border-slate-700 px-2.5 py-2 flex flex-wrap items-center justify-between gap-2 shadow-[0_1px_2px_rgba(0,0,0,0.3),0_8px_20px_rgba(0,0,0,0.35)]">
-            {/* Preset Kamera 3D */}
-            <div className="flex items-center gap-1" role="group" aria-label="Preset kamera 3D">
-              <Camera className="w-3.5 h-3.5 text-slate-400 mr-0.5 shrink-0" aria-hidden="true" />
-              {CAMERA_PRESETS.map((preset) => (
+          <div className="pointer-events-auto w-full rounded-xl bg-slate-950/95 border border-slate-700 px-2.5 py-2 flex flex-col gap-2 shadow-[0_1px_2px_rgba(0,0,0,0.3),0_8px_20px_rgba(0,0,0,0.35)]">
+            {/* Baris 1: Kamera, Slot Cepat, dan Tombol Studio 3D */}
+            <div className="flex flex-wrap items-center justify-between gap-1.5">
+              <div className="flex items-center gap-1" role="group" aria-label="Preset kamera 3D">
+                <Camera className="w-3.5 h-3.5 text-slate-400 mr-0.5 shrink-0" aria-hidden="true" />
+                {CAMERA_PRESETS.map((preset) => (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    onClick={() => handleCameraPreset(preset.id)}
+                    aria-pressed={activePreset === preset.id}
+                    className={`min-h-7 px-2 py-1 rounded-lg text-[11px] font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400 ${
+                      activePreset === preset.id
+                        ? 'bg-blue-700 text-white'
+                        : 'bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white'
+                    }`}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-1">
+                {quickSlots.map((slot) => (
+                  <button
+                    key={slot.label}
+                    type="button"
+                    onClick={slot.onClick}
+                    aria-label={slot.ariaLabel}
+                    disabled={state.phase === 'bench' && coolerInstalled && slot.label === 'Dudukan Cooler'}
+                    className="min-h-7 px-2 py-1 rounded-lg border border-slate-700 bg-slate-900 hover:bg-slate-800 hover:border-sky-500 text-[11px] font-mono text-slate-200 transition-colors disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
+                  >
+                    {slot.label}
+                  </button>
+                ))}
+
                 <button
-                  key={preset.id}
                   type="button"
-                  onClick={() => handleCameraPreset(preset.id)}
-                  aria-pressed={activePreset === preset.id}
-                  className={`min-h-7 px-2 py-1 rounded-lg text-[11px] font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400 ${
-                    activePreset === preset.id
-                      ? 'bg-blue-700 text-white'
+                  onClick={() => setShowStyleTools((prev) => !prev)}
+                  aria-expanded={showStyleTools}
+                  data-testid="toggle-3d-studio-tools"
+                  className={`min-h-7 px-2 py-1 rounded-lg text-[11px] font-medium flex items-center gap-1 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400 ${
+                    showStyleTools
+                      ? 'bg-sky-700 text-white'
                       : 'bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white'
                   }`}
                 >
-                  {preset.label}
+                  <Palette className="w-3 h-3" aria-hidden="true" />
+                  <span>Studio 3D</span>
                 </button>
-              ))}
+              </div>
             </div>
 
-            {/* Akses cepat slot target aktif (mendukung klik 1-ketuk & keyboard) */}
-            <div className="flex flex-wrap items-center gap-1" role="group" aria-label="Slot target aktif">
-              {quickSlots.map((slot) => (
-                <button
-                  key={slot.label}
-                  type="button"
-                  onClick={slot.onClick}
-                  aria-label={slot.ariaLabel}
-                  disabled={state.phase === 'bench' && coolerInstalled && slot.label === 'Dudukan Cooler'}
-                  className="min-h-7 px-2 py-1 rounded-lg border border-slate-700 bg-slate-900 hover:bg-slate-800 hover:border-sky-500 text-[11px] font-mono text-slate-200 transition-colors disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
-                >
-                  {slot.label}
-                </button>
-              ))}
-            </div>
+            {/* Baris 2 (Opsional): Mode Terurai, Kaca Tempered, Aliran Udara, Tema Casing, Lampu & RGB */}
+            {showStyleTools && (
+              <div className="border-t border-slate-800 pt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-300">
+                {/* Slider Tampilan Terurai (Exploded View) */}
+                <label className="flex items-center gap-1.5 min-w-[140px]">
+                  <Layers className="w-3.5 h-3.5 text-sky-400 shrink-0" aria-hidden="true" />
+                  <span className="whitespace-nowrap">Terurai</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    value={Math.round(visualOptions.explodedAmount * 100)}
+                    onChange={(e) =>
+                      setVisualOptions((prev) => ({
+                        ...prev,
+                        explodedAmount: Number(e.target.value) / 100,
+                      }))
+                    }
+                    aria-label="Jarak tampilan terurai komponen 3D"
+                    className="w-20 accent-blue-500 cursor-pointer"
+                  />
+                </label>
+
+                {/* Tombol Kaca Tempered, Airflow 3D, dan Pencahayaan Studio */}
+                <div className="flex flex-wrap items-center gap-1">
+                  {state.phase === 'case' && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setVisualOptions((prev) => ({
+                            ...prev,
+                            glassPanelClosed: !prev.glassPanelClosed,
+                          }))
+                        }
+                        aria-pressed={visualOptions.glassPanelClosed}
+                        className={`px-2 py-1 rounded-lg border text-[11px] flex items-center gap-1 transition-colors ${
+                          visualOptions.glassPanelClosed
+                            ? 'bg-blue-700 border-blue-500 text-white'
+                            : 'bg-slate-900 border-slate-700 text-slate-300 hover:bg-slate-800'
+                        }`}
+                      >
+                        <Shield className="w-3 h-3" aria-hidden="true" />
+                        <span>{visualOptions.glassPanelClosed ? 'Kaca: Tutup' : 'Kaca: Buka'}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setVisualOptions((prev) => ({
+                            ...prev,
+                            showAirflow: !prev.showAirflow,
+                          }))
+                        }
+                        aria-pressed={visualOptions.showAirflow}
+                        className={`px-2 py-1 rounded-lg border text-[11px] flex items-center gap-1 transition-colors ${
+                          visualOptions.showAirflow
+                            ? 'bg-sky-700 border-sky-500 text-white'
+                            : 'bg-slate-900 border-slate-700 text-slate-300 hover:bg-slate-800'
+                        }`}
+                      >
+                        <Wind className="w-3 h-3" aria-hidden="true" />
+                        <span>Aliran Udara</span>
+                      </button>
+                    </>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setVisualOptions((prev) => ({
+                        ...prev,
+                        studioLight: prev.studioLight === 'studio' ? 'dark_rgb' : 'studio',
+                      }))
+                    }
+                    className={`px-2 py-1 rounded-lg border text-[11px] flex items-center gap-1 transition-colors ${
+                      visualOptions.studioLight === 'dark_rgb'
+                        ? 'bg-indigo-700 border-indigo-500 text-white'
+                        : 'bg-slate-900 border-slate-700 text-slate-300 hover:bg-slate-800'
+                    }`}
+                  >
+                    <Sun className="w-3 h-3" aria-hidden="true" />
+                    <span>{visualOptions.studioLight === 'studio' ? 'Lampu Terang' : 'Mode RGB'}</span>
+                  </button>
+                </div>
+
+                {/* Pilihan Warna Casing & RGB */}
+                <div className="flex flex-wrap items-center gap-2">
+                  {state.phase === 'case' && (
+                    <div className="flex items-center gap-1" role="group" aria-label="Warna casing">
+                      <span className="text-slate-400">Casing:</span>
+                      {CASE_FINISH_OPTIONS.map((opt) => (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          title={`Casing ${opt.label}`}
+                          aria-label={`Warna casing ${opt.label}`}
+                          aria-pressed={visualOptions.caseFinish === opt.id}
+                          onClick={() =>
+                            setVisualOptions((prev) => ({ ...prev, caseFinish: opt.id }))
+                          }
+                          className={`w-5 h-5 rounded-full border ${opt.dotClass} ${
+                            visualOptions.caseFinish === opt.id ? 'ring-2 ring-sky-400' : ''
+                          }`}
+                        />
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="flex items-center gap-1" role="group" aria-label="Warna lampu RGB">
+                    <span className="text-slate-400">RGB:</span>
+                    {RGB_THEME_OPTIONS.map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        title={`RGB ${opt.label}`}
+                        aria-label={`Lampu RGB ${opt.label}`}
+                        aria-pressed={visualOptions.rgbTheme === opt.id}
+                        onClick={() => setVisualOptions((prev) => ({ ...prev, rgbTheme: opt.id }))}
+                        className={`w-4 h-4 rounded-full border border-white/25 ${opt.dotClass} ${
+                          visualOptions.rgbTheme === opt.id ? 'ring-2 ring-white' : ''
+                        }`}
+                      />
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

@@ -1,17 +1,19 @@
 /* Layar judul utama RakitPC Lab dengan pilihan pesanan klien / rakit bebas, mode simulasi, dan akses langsung ke Toko Modul */
 
-import { AlertTriangle, Award, Play, ShoppingBag, Wallet } from 'lucide-react';
+import { AlertTriangle, Award, FolderKanban, Play, ShoppingBag, Wallet, X } from 'lucide-react';
+import { useState } from 'react';
 import {
   MODE_DESCRIPTIONS,
   type GameMode,
 } from '../config';
 import { ACHIEVEMENT_DEFS, type AchievementId } from '../lib/achievements';
-import { formatRupiah, formatScore } from '../lib/formatters';
+import { formatRupiah, formatScore, formatWatts } from '../lib/formatters';
 import {
   CATALOG_BY_SKU,
   CLIENT_ORDERS,
   CLIENT_ORDER_LIST,
   type ClientOrderId,
+  type SavedBuildRecord,
   type WorkshopWallet,
 } from '../lib/hardwareShop';
 import { BimoAvatar } from './RobotBimo';
@@ -23,6 +25,7 @@ interface TitleScreenProps {
   bestScore: number;
   unlockedAchievements: AchievementId[];
   workshopWallet: WorkshopWallet;
+  savedBuilds: SavedBuildRecord[];
   onSelectMode: (mode: GameMode) => void;
   onSelectOrder: (orderId: ClientOrderId) => void;
   onToggleRandomFault: (enabled: boolean) => void;
@@ -37,12 +40,14 @@ export function TitleScreen({
   bestScore,
   unlockedAchievements,
   workshopWallet,
+  savedBuilds,
   onSelectMode,
   onSelectOrder,
   onToggleRandomFault,
   onStartWithShop,
   onStartQuickBuild,
 }: TitleScreenProps) {
+  const [galleryOpen, setGalleryOpen] = useState(false);
   const activeOrder = CLIENT_ORDERS[selectedOrderId];
   const recCpu = CATALOG_BY_SKU[activeOrder.recommendedLoadout.cpu];
   const recGpu = CATALOG_BY_SKU[activeOrder.recommendedLoadout.gpu];
@@ -117,7 +122,7 @@ export function TitleScreen({
                   : `Jasa +${formatRupiah(activeOrder.serviceFee)}`}
               </span>
             </div>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-2 gap-1.5">
               {CLIENT_ORDER_LIST.map((order) => {
                 const active = selectedOrderId === order.id;
                 return (
@@ -127,7 +132,7 @@ export function TitleScreen({
                     role="radio"
                     aria-checked={active}
                     onClick={() => onSelectOrder(order.id)}
-                    className={`min-h-14 text-left px-3 py-2 rounded-xl border transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700 ${
+                    className={`min-h-12 text-left px-2.5 py-1.5 rounded-xl border transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700 ${
                       active
                         ? 'bg-blue-50 border-blue-700 ring-1 ring-blue-700'
                         : 'bg-white border-neutral-200 hover:border-neutral-400'
@@ -216,8 +221,8 @@ export function TitleScreen({
             </button>
           </div>
 
-          {/* Ringkasan Dompet Bengkel, Rekor, & Lencana */}
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-neutral-600 tabular-nums">
+          {/* Ringkasan Dompet Bengkel, Galeri Rakitan, Rekor, & Lencana */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-neutral-600 tabular-nums">
             {workshopWallet.completedOrders > 0 && (
               <span className="inline-flex items-center gap-1">
                 <Wallet className="w-3.5 h-3.5 text-emerald-700 shrink-0" aria-hidden="true" />
@@ -242,6 +247,16 @@ export function TitleScreen({
                 {ACHIEVEMENT_DEFS.length} Lencana
               </span>
             </span>
+            {savedBuilds.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setGalleryOpen(true)}
+                className="inline-flex items-center gap-1 text-blue-700 hover:underline font-semibold"
+              >
+                <FolderKanban className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                <span>Galeri Rakitan ({savedBuilds.length})</span>
+              </button>
+            )}
           </div>
         </div>
 
@@ -338,8 +353,62 @@ export function TitleScreen({
 
       {/* Petunjuk kontrol ringkas di margin aman bawah */}
       <footer className="w-full max-w-6xl mx-auto pt-4 text-center text-xs text-neutral-500">
-        Belanja Modul di Toko · Klik atau Seret Komponen · R Putar CPU · H Petunjuk BIMO · P Jeda
+        Belanja Modul di Toko · Klik atau Seret Komponen · R Putar CPU · H Petunjuk BIMO · B Toko Modul · P Jeda
       </footer>
+
+      {/* Modal Galeri Riwayat Rakitan Bengkel */}
+      {galleryOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="gallery-modal-title"
+          className="fixed inset-0 z-50 bg-neutral-950/65 flex items-center justify-center p-4"
+        >
+          <div className="bg-white border border-neutral-200 rounded-2xl w-full max-w-2xl max-h-[85vh] overflow-y-auto p-6 shadow-[0_1px_2px_rgba(0,0,0,0.08),0_12px_32px_rgba(0,0,0,0.2)] flex flex-col gap-4">
+            <div className="flex items-center justify-between gap-3 border-b border-neutral-200 pb-3">
+              <div>
+                <h2 id="gallery-modal-title" className="text-lg font-semibold text-neutral-900">
+                  Galeri Rakitan Bengkel ({savedBuilds.length})
+                </h2>
+                <p className="text-xs text-neutral-600">
+                  Catatan PC yang berhasil lolos uji POST di bengkelmu.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setGalleryOpen(false)}
+                aria-label="Tutup galeri rakitan"
+                className="w-10 h-10 rounded-xl border border-neutral-200 bg-white hover:bg-neutral-100 text-neutral-700 flex items-center justify-center shrink-0"
+              >
+                <X className="w-4 h-4" aria-hidden="true" />
+              </button>
+            </div>
+
+            <div className="space-y-2.5">
+              {savedBuilds.map((item) => (
+                <div
+                  key={item.id}
+                  className="rounded-xl border border-neutral-200 bg-neutral-50 p-3.5 flex flex-col gap-1.5 text-xs"
+                >
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <p className="font-semibold text-neutral-900">
+                      {item.orderTitle}{' '}
+                      <span className="font-normal text-neutral-500">({item.clientName})</span>
+                    </p>
+                    <span className="font-mono font-semibold text-blue-700 tabular-nums">
+                      Performa {item.benchmarkScore}/100 · {formatRupiah(item.totalSpent)}
+                    </span>
+                  </div>
+                  <p className="font-mono text-[11px] text-neutral-600 tabular-nums">
+                    {item.cpuModel} · {item.gpuModel} · {item.coolerModel} · {item.ramLabel} ·{' '}
+                    {item.ssdModel} · {formatWatts(item.totalWatts)}/{formatWatts(item.psuCapacityWatts)}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

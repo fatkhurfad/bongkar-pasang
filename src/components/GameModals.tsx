@@ -1,6 +1,7 @@
 /* Modal jeda, ringkasan keberhasilan uji POST BIOS beserta laporan proyek klien & lencana pencapaian, dan kartu edukasi detail komponen */
 
 import {
+  Activity,
   AlertTriangle,
   Award,
   CheckCircle2,
@@ -133,6 +134,7 @@ function AchievementIcon({ id, unlocked }: { id: AchievementId; unlocked: boolea
 interface VictoryModalProps {
   state: AssemblyState;
   bestScore: number;
+  onOpenBenchmarkLab: () => void;
   onRestartWithShop: () => void;
   onBackToTitle: () => void;
 }
@@ -140,6 +142,7 @@ interface VictoryModalProps {
 export function VictoryModal({
   state,
   bestScore,
+  onOpenBenchmarkLab,
   onRestartWithShop,
   onBackToTitle,
 }: VictoryModalProps) {
@@ -330,12 +333,21 @@ export function VictoryModal({
         </div>
 
         {/* Tombol aksi utama */}
-        <div className="flex flex-col sm:flex-row gap-3 pt-1">
+        <div className="flex flex-col sm:flex-row gap-2.5 pt-1">
+          <button
+            type="button"
+            onClick={onOpenBenchmarkLab}
+            data-testid="open-benchmark-lab"
+            className="flex-1 min-h-11 px-4 py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-sm font-semibold transition-colors flex items-center justify-center gap-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700"
+          >
+            <Activity className="w-4 h-4" aria-hidden="true" />
+            <span>Uji Benchmark &amp; BIOS</span>
+          </button>
           <button
             type="button"
             data-start="true"
             onClick={onRestartWithShop}
-            className="flex-1 min-h-11 px-5 py-2.5 rounded-xl bg-blue-700 hover:bg-blue-800 text-white text-sm font-semibold transition-colors flex items-center justify-center gap-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700"
+            className="flex-1 min-h-11 px-4 py-2.5 rounded-xl bg-blue-700 hover:bg-blue-800 text-white text-sm font-semibold transition-colors flex items-center justify-center gap-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700"
           >
             <ShoppingBag className="w-4 h-4" aria-hidden="true" />
             <span>Belanja &amp; Rakit Lagi</span>
@@ -343,7 +355,7 @@ export function VictoryModal({
           <button
             type="button"
             onClick={onBackToTitle}
-            className="min-h-11 px-5 py-2.5 rounded-xl border border-neutral-300 bg-white hover:bg-neutral-50 text-neutral-900 text-sm font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700"
+            className="min-h-11 px-4 py-2.5 rounded-xl border border-neutral-300 bg-white hover:bg-neutral-50 text-neutral-900 text-sm font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700"
           >
             Pilih Proyek Lain
           </button>

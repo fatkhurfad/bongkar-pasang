@@ -23,6 +23,7 @@ import {
   type AchievementId,
 } from './lib/achievements';
 import { AudioPanelModal } from './components/AudioPanel';
+import { BenchmarkLabModal } from './components/BenchmarkLabModal';
 import { ComponentTray } from './components/ComponentTray';
 import { HardwareInfoModal, PauseModal, VictoryModal } from './components/GameModals';
 import { HardwareShopModal } from './components/HardwareShop';
@@ -36,8 +37,10 @@ import {
   buyDualChannelRamKit,
   createWorkshopState,
   getCompletedStepCount,
+  getEffectivePartInfo,
   getProgressPercent,
   getPsuCapacityWatts,
+  getRamSummaryLabel,
   getTotalWattage,
   installPartOnSlot,
   replaceDamagedPart,
@@ -55,10 +58,13 @@ import {
   CLIENT_ORDERS,
   evaluateBuildLoadout,
   getShopCategoryForPart,
+  loadSavedBuilds,
   loadWorkshopWallet,
+  saveCompletedBuild,
   saveWorkshopWallet,
   type BuyableSlotId,
   type ClientOrderId,
+  type SavedBuildRecord,
   type ShopCategory,
   type WorkshopWallet,
 } from './lib/hardwareShop';
@@ -132,6 +138,8 @@ export default function App() {
     loadUnlockedAchievements(),
   );
   const [workshopWallet, setWorkshopWallet] = useState<WorkshopWallet>(() => loadWorkshopWallet());
+  const [savedBuilds, setSavedBuilds] = useState<SavedBuildRecord[]>(() => loadSavedBuilds());
+  const [benchmarkOpen, setBenchmarkOpen] = useState(false);
   const [infoPartId, setInfoPartId] = useState<PartId | null>(null);
   const [postRun, setPostRun] = useState<{
     lines: PostLogLine[];
@@ -222,6 +230,28 @@ export default function App() {
         saveWorkshopWallet(next);
         return next;
       });
+      const cpuInfo = getEffectivePartInfo(state, 'cpu');
+      const gpuInfo = getEffectivePartInfo(state, 'gpu');
+      const coolerInfo = getEffectivePartInfo(state, 'cpu_cooler');
+      const ssdInfo = getEffectivePartInfo(state, 'ssd_nvme');
+      const nextGallery = saveCompletedBuild({
+        id: `build_${Date.now()}`,
+        completedAtIso: new Date().toISOString(),
+        orderId: state.orderId,
+        orderTitle: order.title,
+        clientName: order.clientName,
+        totalSpent: evaluation.totalSpent,
+        serviceFeeEarned: payout,
+        benchmarkScore: evaluation.benchmarkScore,
+        totalWatts: evaluation.estimatedWattage,
+        psuCapacityWatts: evaluation.psuCapacityWatts,
+        cpuModel: cpuInfo.model,
+        gpuModel: gpuInfo.model,
+        coolerModel: coolerInfo.model,
+        ramLabel: getRamSummaryLabel(state),
+        ssdModel: ssdInfo.model,
+      });
+      setSavedBuilds(nextGallery);
     }
   }, [
     state.screen,
@@ -248,6 +278,7 @@ export default function App() {
       rewardCreditedRef.current = false;
       setInfoPartId(null);
       setAudioPanelOpen(false);
+      setBenchmarkOpen(false);
       setPostRun(null);
       setLastAudioCue(null);
       setShopCategory('all');
@@ -280,6 +311,7 @@ export default function App() {
     setInfoPartId(null);
     setAudioPanelOpen(false);
     setShopOpen(false);
+    setBenchmarkOpen(false);
     setPostRun(null);
     setLastAudioCue(null);
     setState(
@@ -552,6 +584,7 @@ export default function App() {
         bestScore={bestScore}
         unlockedAchievements={unlockedAchievements}
         workshopWallet={workshopWallet}
+        savedBuilds={savedBuilds}
         onSelectMode={setSelectedMode}
         onSelectOrder={setSelectedOrderId}
         onToggleRandomFault={setRandomFaultEnabled}
@@ -793,13 +826,19 @@ export default function App() {
       )}
 
       {/* Modal Kemenangan / Ringkasan BIOS POST & Pembayaran Jasa Bengkel */}
-      {state.screen === 'gameover' && (
+      {state.screen === 'gameover' && !benchmarkOpen && (
         <VictoryModal
           state={state}
           bestScore={bestScore}
+          onOpenBenchmarkLab={() => setBenchmarkOpen(true)}
           onRestartWithShop={() => startWorkshopSession({ openShopFirst: true })}
           onBackToTitle={handleBackToTitle}
         />
+      )}
+
+      {/* Modal Laboratorium Uji Benchmark, FPS & UEFI BIOS Tuning */}
+      {state.screen === 'gameover' && benchmarkOpen && (
+        <BenchmarkLabModal state={state} onClose={() => setBenchmarkOpen(false)} />
       )}
 
       {/* Modal Info Edukasi Hardware */}
