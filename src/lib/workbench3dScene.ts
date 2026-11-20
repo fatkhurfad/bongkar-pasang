@@ -21,6 +21,7 @@ import {
   createProceduralTexturePack,
   disposeProceduralTexturePack,
 } from './workbench3dTextures';
+import { computeDynamicLightingRig, RGB_THEME_COLORS } from './workbenchLighting';
 
 export type CameraPresetId = 'isometric' | 'top' | 'detail' | 'side';
 export type CaseFinishId = 'carbon' | 'white' | 'titanium';
@@ -72,14 +73,10 @@ const _pointer = new THREE.Vector2();
 const _targetPos = new THREE.Vector3();
 const _targetLook = new THREE.Vector3();
 const _tmpObj = new THREE.Object3D();
+const _tmpColor = new THREE.Color();
+const _rgbColor = new THREE.Color();
 
-const RGB_THEME_HEX: Record<RgbThemeId, number> = {
-  blue: 0x3b82f6,
-  cyan: 0x06b6d4,
-  emerald: 0x10b981,
-  amber: 0xf59e0b,
-  off: 0x1e293b,
-};
+const RGB_THEME_HEX: Record<RgbThemeId, number> = RGB_THEME_COLORS;
 
 const CASE_FINISH_COLORS: Record<
   CaseFinishId,
@@ -464,18 +461,27 @@ export function createWorkbench3DController(
   scene.add(rimLight);
 
   // Softbox studio elongated specular highlight pada GPU asli
+  let overheadSoftbox: THREE.RectAreaLight | null = null;
   if (!isSoftwareGl) {
     RectAreaLightUniformsLib.init();
-    const overheadSoftbox = new THREE.RectAreaLight(0xeef6ff, 2.4, 7.5, 3.2);
+    overheadSoftbox = new THREE.RectAreaLight(0xeef6ff, 2.4, 7.5, 3.2);
     overheadSoftbox.position.set(0, 7.8, 2.2);
     overheadSoftbox.lookAt(0, 1.2, 0);
     scene.add(overheadSoftbox);
   }
 
-  // Lampu aksen RGB interior casing (menyala saat PC hidup / dark RGB mode)
-  const caseRgbLight = new THREE.PointLight(0x3b82f6, 0, 9.5, 1.8);
-  caseRgbLight.position.set(0.2, 2.8, 0.7);
+  // Sistem lampu dinamis RGB komponen (interior casing + pantulan ke meja depan/samping & kipas intake)
+  const caseRgbLight = new THREE.PointLight(0x3b82f6, 0, 9.8, 1.7);
+  caseRgbLight.position.set(0.15, 2.75, 0.72);
   scene.add(caseRgbLight);
+
+  const deskBounceLight = new THREE.PointLight(0x3b82f6, 0, 10.5, 1.65);
+  deskBounceLight.position.set(-0.1, 1.35, 2.45);
+  scene.add(deskBounceLight);
+
+  const frontFanSpillLight = new THREE.PointLight(0x3b82f6, 0, 9.2, 1.7);
+  frontFanSpillLight.position.set(3.45, 1.95, 0.35);
+  scene.add(frontFanSpillLight);
 
   // OrbitControls
   const controls = new OrbitControls(camera, renderer.domElement);
@@ -487,29 +493,33 @@ export function createWorkbench3DController(
   controls.enablePan = false;
 
   // =========================================================================
-  // MEJA BENGKEL TEKNISI + MATRAS ESD + PROPS BAUT & OBENG
+  // MEJA BENGKEL TEKNISI + MATRAS ESD + PANTULAN CAHAYA RGB + PROPS BAUT
   // =========================================================================
   const workshopDesk = new THREE.Mesh(
     new THREE.BoxGeometry(24, 0.4, 18),
-    new THREE.MeshStandardMaterial({
+    new THREE.MeshPhysicalMaterial({
       map: texPack.deskWoodAlbedo,
-      roughness: 0.82,
-      metalness: 0.08,
+      roughness: 0.56,
+      metalness: 0.14,
+      clearcoat: 0.28,
+      clearcoatRoughness: 0.36,
     }),
   );
   workshopDesk.position.set(0, -0.22, 0);
   workshopDesk.receiveShadow = !isSoftwareGl;
   scene.add(workshopDesk);
 
-  // Matras Anti-Statis ESD di atas meja kerja
+  // Matras Anti-Statis ESD satin di atas meja kerja (menangkap pantulan specular cahaya RGB)
   const esdMatMesh = new THREE.Mesh(
     new THREE.BoxGeometry(11.4, 0.05, 8.2),
-    new THREE.MeshStandardMaterial({
+    new THREE.MeshPhysicalMaterial({
       map: texPack.esdAlbedo,
       bumpMap: texPack.esdBump,
       bumpScale: 0.012,
-      roughness: 0.76,
-      metalness: 0.05,
+      roughness: 0.52,
+      metalness: 0.08,
+      clearcoat: 0.18,
+      clearcoatRoughness: 0.42,
     }),
   );
   esdMatMesh.position.set(0, 0.005, 0);
@@ -529,6 +539,59 @@ export function createWorkbench3DController(
   contactPlane.rotation.x = -Math.PI / 2;
   contactPlane.position.y = 0.032;
   scene.add(contactPlane);
+
+  // Bidang pantulan cahaya RGB komponen (RAM, AIO/Cooler, GPU, & Kipas) di atas matras ESD & meja
+  const deskSideGlowMat = new THREE.MeshBasicMaterial({
+    map: texPack.rgbDeskGlow,
+    color: 0x3b82f6,
+    transparent: true,
+    opacity: 0,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
+  });
+  const deskSideGlowPlane = new THREE.Mesh(new THREE.PlaneGeometry(7.8, 4.6), deskSideGlowMat);
+  deskSideGlowPlane.rotation.x = -Math.PI / 2;
+  deskSideGlowPlane.position.set(-0.2, 0.038, 2.35);
+  deskSideGlowPlane.visible = false;
+  scene.add(deskSideGlowPlane);
+
+  const deskFrontGlowMat = new THREE.MeshBasicMaterial({
+    map: texPack.rgbDeskGlow,
+    color: 0x3b82f6,
+    transparent: true,
+    opacity: 0,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
+  });
+  const deskFrontGlowPlane = new THREE.Mesh(new THREE.PlaneGeometry(4.4, 5.2), deskFrontGlowMat);
+  deskFrontGlowPlane.rotation.x = -Math.PI / 2;
+  deskFrontGlowPlane.position.set(3.85, 0.039, 0.15);
+  deskFrontGlowPlane.visible = false;
+  scene.add(deskFrontGlowPlane);
+
+  // Pendar bawah kaki casing (underglow lembut ke permukaan matras)
+  const caseUnderglowMat = new THREE.MeshBasicMaterial({
+    map: texPack.rgbDeskGlow,
+    color: 0x3b82f6,
+    transparent: true,
+    opacity: 0,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
+  });
+  const caseUnderglowPlane = new THREE.Mesh(new THREE.PlaneGeometry(6.8, 3.6), caseUnderglowMat);
+  caseUnderglowPlane.rotation.x = -Math.PI / 2;
+  caseUnderglowPlane.position.set(0.05, 0.036, 0.35);
+  caseUnderglowPlane.visible = false;
+  scene.add(caseUnderglowPlane);
 
   // Material PBR Bersama (variasi roughness & metalness nyata antar logam, PCB, dan plastik)
   const pcbMat = new THREE.MeshStandardMaterial({
@@ -1716,6 +1779,8 @@ export function createWorkbench3DController(
   let latchCurrentAngle = initialState.cpuLatchOpen ? -1.18 : 0;
   let explodedCurrent = visualOpts.explodedAmount;
   let glassSlideCurrent = visualOpts.glassPanelClosed ? 0 : 1;
+  let powerLightBlend = initialState.fansSpinning && initialState.phase === 'case' ? 1 : 0;
+  let rgbPulseClock = 0;
   let airflowClock = 0;
   let hoveredKey: string | null = null;
   let disposed = false;
@@ -1812,16 +1877,90 @@ export function createWorkbench3DController(
     const explodeMoving = Math.abs(explodedCurrent - visualOpts.explodedAmount) > 0.005;
     const glassTarget = visualOpts.glassPanelClosed ? 0 : 1;
     const glassMoving = Math.abs(glassSlideCurrent - glassTarget) > 0.008;
+    const powerTarget = currentState.fansSpinning && currentState.phase === 'case' ? 1 : 0;
+    const lightingTransitioning = Math.abs(powerLightBlend - powerTarget) > 0.006;
     const airflowActive = visualOpts.showAirflow && currentState.phase === 'case';
     return (
       cameraTransitionActive ||
       latchMoving ||
       explodeMoving ||
       glassMoving ||
+      lightingTransitioning ||
       hasActiveDropAnims() ||
       airflowActive ||
       (currentState.fansSpinning && currentState.phase === 'case')
     );
+  };
+
+  // Sinkronisasi pencahayaan dinamis ruangan + efek pantulan cahaya RGB komponen ke meja 3D
+  const updateDynamicLighting = () => {
+    const rig = computeDynamicLightingRig({
+      phase: currentState.phase,
+      studioLight: visualOpts.studioLight,
+      rgbTheme: visualOpts.rgbTheme,
+      isPcPoweredOn: currentState.fansSpinning,
+      glassPanelClosed: visualOpts.glassPanelClosed,
+      powerBlend: powerLightBlend,
+      pulsePhase: rgbPulseClock,
+    });
+
+    _tmpColor.setHex(rig.bgColorHex);
+    if (scene.background instanceof THREE.Color) {
+      scene.background.copy(_tmpColor);
+    } else {
+      scene.background = _tmpColor.clone();
+    }
+    if (scene.fog instanceof THREE.FogExp2) {
+      scene.fog.color.copy(_tmpColor);
+    } else {
+      scene.fog = new THREE.FogExp2(rig.bgColorHex, 0.025);
+    }
+
+    keyLight.intensity = rig.keyLightIntensity;
+    hemiLight.intensity = rig.hemiLightIntensity;
+    rimLight.intensity = rig.rimLightIntensity;
+    if (overheadSoftbox) {
+      overheadSoftbox.intensity = rig.softboxIntensity;
+    }
+    renderer.toneMappingExposure = rig.toneMappingExposure;
+
+    const rgbHex = RGB_THEME_HEX[visualOpts.rgbTheme];
+    const rgbOn = visualOpts.rgbTheme !== 'off';
+
+    // Warna rim light bergeser lembut menuju warna RGB saat PC menyala untuk kilau tepi casing
+    if (rgbOn && rig.rgbActive) {
+      _rgbColor.setHex(rgbHex);
+      _tmpColor.setHex(0x7dd3fc).lerp(_rgbColor, 0.35 * rig.roomDimFactor);
+      rimLight.color.copy(_tmpColor);
+    } else {
+      rimLight.color.setHex(0x7dd3fc);
+    }
+
+    rgbEmissiveMat.color.setHex(rgbHex);
+    rgbEmissiveMat.emissive.setHex(rgbOn ? rgbHex : 0x000000);
+    rgbEmissiveMat.emissiveIntensity = rig.rgbEmissiveIntensity;
+
+    caseRgbLight.color.setHex(rgbHex);
+    caseRgbLight.intensity = rig.interiorRgbLightIntensity;
+
+    deskBounceLight.color.setHex(rgbHex);
+    deskBounceLight.intensity = rig.deskBounceLightIntensity;
+
+    frontFanSpillLight.color.setHex(rgbHex);
+    frontFanSpillLight.intensity = rig.frontFanSpillLightIntensity;
+
+    // Bidang pantulan cahaya RGB di permukaan matras ESD & meja bengkel
+    deskSideGlowMat.color.setHex(rgbHex);
+    deskSideGlowMat.opacity = rig.deskReflectionOpacity;
+    deskSideGlowPlane.visible = rig.deskReflectionOpacity > 0.01;
+
+    deskFrontGlowMat.color.setHex(rgbHex);
+    deskFrontGlowMat.opacity = rig.frontReflectionOpacity;
+    deskFrontGlowPlane.visible = rig.frontReflectionOpacity > 0.01;
+
+    caseUnderglowMat.color.setHex(rgbHex);
+    caseUnderglowMat.opacity = Number((rig.deskReflectionOpacity * 0.58).toFixed(3));
+    caseUnderglowPlane.visible = rig.deskReflectionOpacity > 0.01;
   };
 
   const applyDynamicTransforms = (dt: number) => {
@@ -1842,6 +1981,18 @@ export function createWorkbench3DController(
     glassSlideCurrent = isSoftwareGl
       ? glassTarget
       : THREE.MathUtils.damp(glassSlideCurrent, glassTarget, 8, dt);
+
+    // Transisi peredupan ruangan & pantulan RGB dinamis saat simulasi nyala PC aktif
+    const powerTarget = currentState.fansSpinning && currentState.phase === 'case' ? 1 : 0;
+    powerLightBlend = isSoftwareGl
+      ? powerTarget
+      : THREE.MathUtils.damp(powerLightBlend, powerTarget, 4.5, dt);
+    if (currentState.fansSpinning && currentState.phase === 'case') {
+      rgbPulseClock = (rgbPulseClock + dt * 2.4) % (Math.PI * 2);
+    } else {
+      rgbPulseClock = 0;
+    }
+    updateDynamicLighting();
 
     // Update drop-in spring progress
     installDropProgress.forEach((val, key) => {
@@ -1981,28 +2132,7 @@ export function createWorkbench3DController(
     caseChassisMat.metalness = finish.metalness;
     caseShroudMat.color.setHex(finish.shroud);
 
-    // Tema pencahayaan studio vs bengkel gelap RGB
-    const isDarkRgb = visualOpts.studioLight === 'dark_rgb';
-    const bgHex = isDarkRgb ? 0x050914 : 0x0d1626;
-    scene.background = new THREE.Color(bgHex);
-    scene.fog = new THREE.FogExp2(bgHex, 0.025);
-    keyLight.intensity = isDarkRgb ? 1.05 : 1.95;
-    hemiLight.intensity = isDarkRgb ? 0.45 : 0.92;
-    rimLight.intensity = isDarkRgb ? 1.15 : 0.8;
-
-    // Warna RGB & cahaya interior
-    const rgbHex = RGB_THEME_HEX[visualOpts.rgbTheme];
-    const rgbOn = visualOpts.rgbTheme !== 'off';
-    const powerBoost = currentState.fansSpinning || isDarkRgb ? 1.25 : 0.55;
-    rgbEmissiveMat.color.setHex(rgbHex);
-    rgbEmissiveMat.emissive.setHex(rgbOn ? rgbHex : 0x000000);
-    rgbEmissiveMat.emissiveIntensity = rgbOn ? powerBoost : 0;
-
-    caseRgbLight.color.setHex(rgbHex);
-    caseRgbLight.intensity =
-      rgbOn && currentState.phase === 'case' && (currentState.fansSpinning || isDarkRgb)
-        ? 3.2
-        : 0;
+    updateDynamicLighting();
   };
 
   // Sinkronisasi state React -> 3D Scene + model dinamis sesuai SKU

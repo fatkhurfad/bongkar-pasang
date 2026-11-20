@@ -1,4 +1,4 @@
-/* Pengujian unit mesin benchmark, estimasi FPS, termal throttling, dan profil UEFI BIOS */
+/* Pengujian unit mesin benchmark, estimasi FPS, termal throttling, dan pengaturan Advanced BIOS (XMP, Voltase CPU, & Kurva Kipas Manual) */
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -80,4 +80,78 @@ test('semua 5 pesanan klien (termasuk Streaming 240Hz dan Mesin AI Lokal) memenu
     assert.ok(rep.overallScore >= (order.requirements.minBenchmark ?? 50), `Skor ${id} kurang`);
     assert.equal(rep.isThermalThrottling, false, `Paket rekomendasi ${id} tidak boleh throttle`);
   }
+});
+
+test('Advanced BIOS: profil XMP 2 OC dan overclock Vcore 1,32 V menaikkan skor CPU Multi dan daya puncak', () => {
+  const loadout = CLIENT_ORDERS.gaming_efisien.recommendedLoadout;
+  const stock = runBenchmarkSimulation(loadout, 'gaming_efisien', {
+    xmpEnabled: false,
+    xmpProfile: 'jedec',
+    cpuVoltageV: 1.22,
+    fanCurve: 'seimbang',
+  });
+  const tuned = runBenchmarkSimulation(loadout, 'gaming_efisien', {
+    xmpEnabled: true,
+    xmpProfile: 'xmp2_oc',
+    cpuVoltageV: 1.32,
+    fanCurve: 'performa',
+  });
+
+  assert.equal(stock.ramEffectiveMhz, 4800);
+  assert.equal(tuned.ramEffectiveMhz, 6000);
+  assert.equal(tuned.voltageStatus, 'overclock');
+  assert.ok(tuned.cpuMultiScore > stock.cpuMultiScore);
+  assert.ok(tuned.overallScore >= stock.overallScore);
+  assert.ok(tuned.peakPowerWatts > stock.peakPowerWatts);
+});
+
+test('Advanced BIOS: undervolt ekstrem (< 1,10 V) memicu instabilitas skor sedangkan undervolt optimal (1,15 V) mendinginkan CPU', () => {
+  const loadout = CLIENT_ORDERS.workstation_pro.recommendedLoadout;
+  const nominal = runBenchmarkSimulation(loadout, 'workstation_pro', {
+    xmpEnabled: true,
+    xmpProfile: 'xmp1',
+    cpuVoltageV: 1.22,
+    fanCurve: 'seimbang',
+  });
+  const optimalUndervolt = runBenchmarkSimulation(loadout, 'workstation_pro', {
+    xmpEnabled: true,
+    xmpProfile: 'xmp1',
+    cpuVoltageV: 1.15,
+    fanCurve: 'seimbang',
+  });
+  const unstableUndervolt = runBenchmarkSimulation(loadout, 'workstation_pro', {
+    xmpEnabled: true,
+    xmpProfile: 'xmp1',
+    cpuVoltageV: 1.06,
+    fanCurve: 'seimbang',
+  });
+
+  assert.equal(optimalUndervolt.voltageStatus, 'undervolt_optimal');
+  assert.ok(optimalUndervolt.cpuLoadTempC < nominal.cpuLoadTempC);
+  assert.ok(optimalUndervolt.cpuMultiScore > nominal.cpuMultiScore);
+
+  assert.equal(unstableUndervolt.voltageStatus, 'undervolt_unstable');
+  assert.ok(unstableUndervolt.cpuMultiScore < nominal.cpuMultiScore);
+});
+
+test('Advanced BIOS: kurva kipas PWM manual rendah menaikkan suhu beban penuh dibanding kurva manual 100%', () => {
+  const loadout = CLIENT_ORDERS.ai_dev_rig.recommendedLoadout;
+  const lowManual = runBenchmarkSimulation(loadout, 'ai_dev_rig', {
+    xmpEnabled: true,
+    xmpProfile: 'xmp1',
+    cpuVoltageV: 1.26,
+    fanCurve: 'manual',
+    manualFanCurve: { pwmAt40C: 20, pwmAt60C: 25, pwmAt75C: 30, pwmAt90C: 35 },
+  });
+  const maxManual = runBenchmarkSimulation(loadout, 'ai_dev_rig', {
+    xmpEnabled: true,
+    xmpProfile: 'xmp1',
+    cpuVoltageV: 1.26,
+    fanCurve: 'manual',
+    manualFanCurve: { pwmAt40C: 60, pwmAt60C: 80, pwmAt75C: 95, pwmAt90C: 100 },
+  });
+
+  assert.ok(maxManual.cpuLoadTempC < lowManual.cpuLoadTempC);
+  assert.ok(maxManual.fanRpmLoad > lowManual.fanRpmLoad);
+  assert.ok(maxManual.fanDutyLoadPercent > lowManual.fanDutyLoadPercent);
 });

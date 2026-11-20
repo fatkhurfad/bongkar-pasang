@@ -1,6 +1,6 @@
-/* Overlay terminal BIOS POST autentik dengan teks log bergerak cepat, kursor berkedip, dan indikator LED diagnostik */
+/* Overlay terminal BIOS POST autentik dengan teks log bergerak cepat, kursor berkedip, akses Advanced BIOS (DEL/F2), dan indikator LED diagnostik */
 
-import { FastForward, Terminal } from 'lucide-react';
+import { FastForward, Sliders, Terminal } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { PostLedKey } from '../lib/assemblyEngine';
 import {
@@ -12,6 +12,9 @@ import {
 interface PostTerminalOverlayProps {
   lines: PostLogLine[];
   passed: boolean;
+  paused?: boolean;
+  biosSummaryLabel?: string;
+  onOpenAdvancedBios: () => void;
   onLineRevealed: (line: PostLogLine) => void;
   onComplete: () => void;
 }
@@ -34,6 +37,9 @@ function getLedBadgeClass(state: LedVisualState): string {
 export function PostTerminalOverlay({
   lines,
   passed,
+  paused = false,
+  biosSummaryLabel,
+  onOpenAdvancedBios,
   onLineRevealed,
   onComplete,
 }: PostTerminalOverlayProps) {
@@ -51,8 +57,23 @@ export function PostTerminalOverlay({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lines]);
 
-  // Progres otomatis teks log BIOS satu per satu lalu lanjut ke hasil akhir
+  // Pintasan autentik BIOS POST: tekan DEL atau F2 untuk membuka Advanced BIOS Settings
   useEffect(() => {
+    if (paused) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Delete' || event.key === 'F2') {
+        event.preventDefault();
+        onOpenAdvancedBios();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [paused, onOpenAdvancedBios]);
+
+  // Progres otomatis teks log BIOS satu per satu lalu lanjut ke hasil akhir (dijeda saat Advanced BIOS terbuka)
+  useEffect(() => {
+    if (paused) return;
+
     if (visibleCount < lines.length) {
       const nextLine = lines[visibleCount];
       const timer = window.setTimeout(() => {
@@ -62,13 +83,13 @@ export function PostTerminalOverlay({
       return () => window.clearTimeout(timer);
     }
 
-    // Semua baris sudah tampil: beri jeda singkat agar pengguna sempat membaca hasil akhir
-    const finishDelay = passed ? 420 : 1250;
+    // Semua baris sudah tampil: beri jeda cukup agar pengguna bisa melihat hasil atau masuk BIOS
+    const finishDelay = passed ? 1150 : 1450;
     const doneTimer = window.setTimeout(() => {
       onComplete();
     }, finishDelay);
     return () => window.clearTimeout(doneTimer);
-  }, [visibleCount, lines, passed, onLineRevealed, onComplete]);
+  }, [visibleCount, lines, passed, paused, onLineRevealed, onComplete]);
 
   const shownLines = lines.slice(0, visibleCount);
   const leds = getPostLedStates(lines, visibleCount);
@@ -80,7 +101,7 @@ export function PostTerminalOverlay({
       aria-modal="true"
       aria-labelledby="post-terminal-title"
       data-testid="post-terminal-overlay"
-      className="fixed inset-0 z-50 bg-neutral-950/75 flex items-center justify-center p-4"
+      className="fixed inset-0 z-50 bg-neutral-950/45 flex items-center justify-center p-4"
     >
       {/* Bingkai monitor pengujian BIOS */}
       <div className="w-full max-w-2xl rounded-2xl border-2 border-slate-700 bg-slate-950 text-slate-100 shadow-[0_1px_2px_rgba(0,0,0,0.2),0_16px_40px_rgba(0,0,0,0.45)] overflow-hidden">
@@ -122,6 +143,16 @@ export function PostTerminalOverlay({
 
         {/* Layar log terminal BIOS */}
         <div className="p-4 sm:p-5 min-h-[260px] max-h-[60vh] overflow-y-auto font-mono text-xs sm:text-[13px] leading-relaxed space-y-1.5 bg-slate-950">
+          {/* Baris petunjuk UEFI Setup di puncak terminal */}
+          <div className="pb-2 mb-2 border-b border-slate-800/90 flex flex-wrap items-center justify-between gap-2 text-[11px] text-sky-300">
+            <span>Tekan DEL atau F2 untuk membuka Advanced BIOS Settings</span>
+            {biosSummaryLabel && (
+              <span className="px-2 py-0.5 rounded bg-slate-900 border border-slate-700 text-slate-200 tabular-nums">
+                {biosSummaryLabel}
+              </span>
+            )}
+          </div>
+
           {shownLines.map((line) => (
             <div
               key={line.id}
@@ -166,13 +197,15 @@ export function PostTerminalOverlay({
 
           {/* Prompt kursor berkedip khas BIOS */}
           <div className="pt-2 flex items-center gap-1.5 text-slate-400">
-            <span>{isFinished ? (passed ? 'BIOS>' : 'HALT>') : 'POST>'}</span>
+            <span>{paused ? 'SETUP>' : isFinished ? (passed ? 'BIOS>' : 'HALT>') : 'POST>'}</span>
             <span>
-              {isFinished
-                ? passed
-                  ? 'POST selesai. Membuka ringkasan sistem...'
-                  : 'Eksekusi dihentikan. Periksa komponen di casing.'
-                : 'Memeriksa perangkat keras...'}
+              {paused
+                ? 'POST dijeda sementara. Mengubah pengaturan di Advanced BIOS...'
+                : isFinished
+                  ? passed
+                    ? 'POST selesai. Membuka ringkasan sistem...'
+                    : 'Eksekusi dihentikan. Periksa komponen di casing.'
+                  : 'Memeriksa perangkat keras...'}
             </span>
             <span
               aria-hidden="true"
@@ -181,20 +214,32 @@ export function PostTerminalOverlay({
           </div>
         </div>
 
-        {/* Bilah bawah terminal dengan tombol lewati / lanjut cepat */}
-        <div className="px-4 py-2.5 bg-slate-900 border-t border-slate-800 flex items-center justify-between gap-3">
+        {/* Bilah bawah terminal dengan tombol Advanced BIOS (DEL) dan tombol lewati */}
+        <div className="px-4 py-2.5 bg-slate-900 border-t border-slate-800 flex flex-wrap items-center justify-between gap-2.5">
           <span className="font-mono text-[11px] text-slate-400 tabular-nums">
-            Log {shownLines.length}/{lines.length} · {passed ? 'Urutan Boot Normal' : 'Diagnosis Gangguan'}
+            Log {shownLines.length}/{lines.length} ({passed ? 'Boot Normal' : 'Diagnosis Gangguan'})
           </span>
 
-          <button
-            type="button"
-            onClick={onComplete}
-            className="min-h-9 px-3.5 py-1.5 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-100 text-xs font-semibold transition-colors flex items-center gap-1.5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
-          >
-            <FastForward className="w-3.5 h-3.5" aria-hidden="true" />
-            <span>{passed ? 'Lewati ke Ringkasan' : 'Periksa Casing'}</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onOpenAdvancedBios}
+              data-testid="open-advanced-bios-from-post"
+              className="min-h-9 px-3.5 py-1.5 rounded-lg border border-sky-500/70 bg-blue-950 hover:bg-blue-900 text-sky-100 text-xs font-semibold transition-colors flex items-center gap-1.5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
+            >
+              <Sliders className="w-3.5 h-3.5 text-sky-400" aria-hidden="true" />
+              <span>Advanced BIOS (DEL)</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={onComplete}
+              className="min-h-9 px-3.5 py-1.5 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-100 text-xs font-semibold transition-colors flex items-center gap-1.5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
+            >
+              <FastForward className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>{passed ? 'Lewati ke Ringkasan' : 'Periksa Casing'}</span>
+            </button>
+          </div>
         </div>
       </div>
     </div>

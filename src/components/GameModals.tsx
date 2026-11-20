@@ -6,6 +6,7 @@ import {
   Award,
   CheckCircle2,
   Cpu,
+  Eye,
   Gauge,
   Lock,
   Play,
@@ -26,12 +27,16 @@ import {
 } from '../lib/achievements';
 import {
   getAccuracyPercent,
-  getEffectiveIdleTempC,
   getEffectivePartInfo,
   getPsuCapacityWatts,
   getTotalWattage,
   type AssemblyState,
 } from '../lib/assemblyEngine';
+import {
+  runBenchmarkSimulation,
+  XMP_PROFILE_META,
+  type BiosTuningSettings,
+} from '../lib/benchmarkSim';
 import {
   formatDuration,
   formatPercent,
@@ -133,7 +138,9 @@ function AchievementIcon({ id, unlocked }: { id: AchievementId; unlocked: boolea
 
 interface VictoryModalProps {
   state: AssemblyState;
+  biosSettings: BiosTuningSettings;
   bestScore: number;
+  onInspectPowered3D: () => void;
   onOpenBenchmarkLab: () => void;
   onRestartWithShop: () => void;
   onBackToTitle: () => void;
@@ -141,7 +148,9 @@ interface VictoryModalProps {
 
 export function VictoryModal({
   state,
+  biosSettings,
   bestScore,
+  onInspectPowered3D,
   onOpenBenchmarkLab,
   onRestartWithShop,
   onBackToTitle,
@@ -152,10 +161,10 @@ export function VictoryModal({
   const loadPercent = getPsuLoadPercent(totalWatts, psuCapacity);
   const order = CLIENT_ORDERS[state.orderId];
   const buildEval = evaluateBuildLoadout(state.purchasedModules, state.orderId);
+  const biosReport = runBenchmarkSimulation(state.purchasedModules, state.orderId, biosSettings);
   const cpuInfo = getEffectivePartInfo(state, 'cpu');
   const gpuInfo = getEffectivePartInfo(state, 'gpu');
   const ssdInfo = getEffectivePartInfo(state, 'ssd_nvme');
-  const psuInfo = getEffectivePartInfo(state, 'psu');
   const coolerInfo = getEffectivePartInfo(state, 'cpu_cooler');
   const earnedSet = new Set(state.earnedAchievements);
   const earnedFee = !order.isSandbox && buildEval.allOrderRequirementsMet ? order.serviceFee : 0;
@@ -197,9 +206,12 @@ export function VictoryModal({
             </p>
           </div>
           <div className="rounded-xl bg-neutral-50 border border-neutral-200 p-3">
-            <p className="text-xs text-neutral-600">Skor Performa</p>
-            <p className="text-2xl font-semibold text-blue-700 tabular-nums mt-0.5">
-              {buildEval.benchmarkScore}/100
+            <p className="text-xs text-neutral-600">Skor Performa (BIOS)</p>
+            <p
+              data-testid="victory-benchmark-score"
+              className="text-2xl font-semibold text-blue-700 tabular-nums mt-0.5"
+            >
+              {biosReport.overallScore}/100
             </p>
             <p className="text-[11px] text-neutral-500 tabular-nums">
               Akurasi {formatPercent(accuracy)} ({state.mistakes} salah
@@ -318,27 +330,36 @@ export function VictoryModal({
 
         {/* Simulasi layar monitor BIOS / UEFI */}
         <div className="rounded-xl bg-slate-900 text-slate-100 p-4 font-mono text-xs space-y-2 border border-slate-700">
-          <div className="flex items-center justify-between border-b border-slate-700 pb-2 text-slate-300">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-700 pb-2 text-slate-300">
             <span className="font-semibold text-white">RakitPC UEFI BIOS Utility — POST Summary</span>
             <span className="text-emerald-400">STATUS: OK</span>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5 tabular-nums">
-            <p>CPU: {cpuInfo.model} (LGA1700)</p>
-            <p>Pendingin: {coolerInfo.model} ({state.postResult?.idleTempC ?? getEffectiveIdleTempC(state)}°C)</p>
-            <p>Memori: {state.postResult?.ramModeLabel ?? '32 GB DDR5-5600 (Dual-Channel)'}</p>
+            <p>CPU: {cpuInfo.model} ({biosReport.cpuVoltageV.toFixed(2).replace('.', ',')} V)</p>
+            <p>Pendingin: {coolerInfo.model} ({biosReport.cpuIdleTempC}°C / {biosReport.cpuLoadTempC}°C)</p>
+            <p>Memori: DDR5-{biosReport.ramEffectiveMhz} ({XMP_PROFILE_META[biosReport.xmpProfile].shortLabel})</p>
             <p>GPU: {gpuInfo.model}</p>
             <p>Penyimpanan: {ssdInfo.model}</p>
-            <p>PSU: {psuInfo.model} ({formatPercent(loadPercent)})</p>
+            <p>Profil BIOS: {biosReport.biosSummaryLabel}</p>
           </div>
         </div>
 
         {/* Tombol aksi utama */}
-        <div className="flex flex-col sm:flex-row gap-2.5 pt-1">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
+          <button
+            type="button"
+            onClick={onInspectPowered3D}
+            data-testid="inspect-powered-3d-btn"
+            className="min-h-11 px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-sm font-semibold transition-colors flex items-center justify-center gap-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900"
+          >
+            <Eye className="w-4 h-4" aria-hidden="true" />
+            <span>Lihat PC 3D Menyala</span>
+          </button>
           <button
             type="button"
             onClick={onOpenBenchmarkLab}
             data-testid="open-benchmark-lab"
-            className="flex-1 min-h-11 px-4 py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-sm font-semibold transition-colors flex items-center justify-center gap-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700"
+            className="min-h-11 px-4 py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-sm font-semibold transition-colors flex items-center justify-center gap-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700"
           >
             <Activity className="w-4 h-4" aria-hidden="true" />
             <span>Uji Benchmark &amp; BIOS</span>
@@ -347,7 +368,7 @@ export function VictoryModal({
             type="button"
             data-start="true"
             onClick={onRestartWithShop}
-            className="flex-1 min-h-11 px-4 py-2.5 rounded-xl bg-blue-700 hover:bg-blue-800 text-white text-sm font-semibold transition-colors flex items-center justify-center gap-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700"
+            className="min-h-11 px-4 py-2.5 rounded-xl bg-blue-700 hover:bg-blue-800 text-white text-sm font-semibold transition-colors flex items-center justify-center gap-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700"
           >
             <ShoppingBag className="w-4 h-4" aria-hidden="true" />
             <span>Belanja &amp; Rakit Lagi</span>

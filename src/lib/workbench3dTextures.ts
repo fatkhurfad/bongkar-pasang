@@ -13,6 +13,7 @@ export interface ProceduralTexturePack {
   honeycombVentAlbedo: THREE.CanvasTexture;
   contactShadow: THREE.CanvasTexture;
   deskWoodAlbedo: THREE.CanvasTexture;
+  rgbDeskGlow: THREE.CanvasTexture;
 }
 
 export function createProceduralTexturePack(maxAnisotropy: number): ProceduralTexturePack {
@@ -27,6 +28,7 @@ export function createProceduralTexturePack(maxAnisotropy: number): ProceduralTe
     honeycombVentAlbedo: createHoneycombVentTexture(maxAnisotropy),
     contactShadow: createContactShadowTexture(),
     deskWoodAlbedo: createWorkshopDeskAlbedo(maxAnisotropy),
+    rgbDeskGlow: createRgbDeskGlowTexture(),
   };
 }
 
@@ -472,6 +474,29 @@ function createContactShadowTexture(): THREE.CanvasTexture {
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, 256, 256);
   return new THREE.CanvasTexture(canvas);
+}
+
+// Tekstur pantulan cahaya RGB lembut pada permukaan matras ESD & meja bengkel
+function createRgbDeskGlowTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d')!;
+  ctx.clearRect(0, 0, 256, 256);
+
+  // Gradien radial inti cahaya + pendar halus memudar mulus ke tepi nol
+  const grad = ctx.createRadialGradient(128, 128, 6, 128, 128, 124);
+  grad.addColorStop(0, 'rgba(255, 255, 255, 0.92)');
+  grad.addColorStop(0.28, 'rgba(255, 255, 255, 0.56)');
+  grad.addColorStop(0.58, 'rgba(255, 255, 255, 0.2)');
+  grad.addColorStop(0.84, 'rgba(255, 255, 255, 0.04)');
+  grad.addColorStop(1, 'rgba(255, 255, 255, 0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 256, 256);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
 }
 
 export function createDynamicCpuIhsTexture(

@@ -22,6 +22,7 @@ import {
   saveUnlockedAchievements,
   type AchievementId,
 } from './lib/achievements';
+import { AdvancedBiosModal } from './components/AdvancedBiosModal';
 import { AudioPanelModal } from './components/AudioPanel';
 import { BenchmarkLabModal } from './components/BenchmarkLabModal';
 import { ComponentTray } from './components/ComponentTray';
@@ -31,6 +32,11 @@ import { PostTerminalOverlay } from './components/PostTerminalOverlay';
 import { RobotBimoPanel } from './components/RobotBimo';
 import { TitleScreen } from './components/TitleScreen';
 import { WorkbenchStage, type WorkbenchViewMode } from './components/WorkbenchStage';
+import {
+  DEFAULT_BIOS_SETTINGS,
+  runBenchmarkSimulation,
+  type BiosTuningSettings,
+} from './lib/benchmarkSim';
 import {
   autoFillRecommendedBuild,
   buyCatalogModule,
@@ -140,6 +146,9 @@ export default function App() {
   const [workshopWallet, setWorkshopWallet] = useState<WorkshopWallet>(() => loadWorkshopWallet());
   const [savedBuilds, setSavedBuilds] = useState<SavedBuildRecord[]>(() => loadSavedBuilds());
   const [benchmarkOpen, setBenchmarkOpen] = useState(false);
+  const [biosSettings, setBiosSettings] = useState<BiosTuningSettings>(DEFAULT_BIOS_SETTINGS);
+  const [advancedBiosOpen, setAdvancedBiosOpen] = useState(false);
+  const [showcase3dMode, setShowcase3dMode] = useState(false);
   const [infoPartId, setInfoPartId] = useState<PartId | null>(null);
   const [postRun, setPostRun] = useState<{
     lines: PostLogLine[];
@@ -188,7 +197,8 @@ export default function App() {
       shopOpen ||
       infoPartId !== null ||
       audioPanelOpen ||
-      postRun !== null
+      postRun !== null ||
+      advancedBiosOpen
     ) {
       return;
     }
@@ -198,7 +208,7 @@ export default function App() {
       );
     }, 1000);
     return () => window.clearInterval(timer);
-  }, [state.screen, shopOpen, infoPartId, audioPanelOpen, postRun]);
+  }, [state.screen, shopOpen, infoPartId, audioPanelOpen, postRun, advancedBiosOpen]);
 
   // Simpan skor terbaik, gabungkan lencana pencapaian, dan catat pembayaran jasa bengkel saat POST lulus
   useEffect(() => {
@@ -221,6 +231,7 @@ export default function App() {
       rewardCreditedRef.current = true;
       const order = CLIENT_ORDERS[state.orderId];
       const evaluation = evaluateBuildLoadout(state.purchasedModules, state.orderId);
+      const biosReport = runBenchmarkSimulation(state.purchasedModules, state.orderId, biosSettings);
       const payout = !order.isSandbox && evaluation.allOrderRequirementsMet ? order.serviceFee : 0;
       setWorkshopWallet((prev) => {
         const next: WorkshopWallet = {
@@ -242,7 +253,7 @@ export default function App() {
         clientName: order.clientName,
         totalSpent: evaluation.totalSpent,
         serviceFeeEarned: payout,
-        benchmarkScore: evaluation.benchmarkScore,
+        benchmarkScore: biosReport.overallScore,
         totalWatts: evaluation.estimatedWattage,
         psuCapacityWatts: evaluation.psuCapacityWatts,
         cpuModel: cpuInfo.model,
@@ -259,6 +270,7 @@ export default function App() {
     state.earnedAchievements,
     state.orderId,
     state.purchasedModules,
+    biosSettings,
     bestScore,
   ]);
 
@@ -279,6 +291,9 @@ export default function App() {
       setInfoPartId(null);
       setAudioPanelOpen(false);
       setBenchmarkOpen(false);
+      setAdvancedBiosOpen(false);
+      setBiosSettings(DEFAULT_BIOS_SETTINGS);
+      setShowcase3dMode(false);
       setPostRun(null);
       setLastAudioCue(null);
       setShopCategory('all');
@@ -312,6 +327,9 @@ export default function App() {
     setAudioPanelOpen(false);
     setShopOpen(false);
     setBenchmarkOpen(false);
+    setAdvancedBiosOpen(false);
+    setBiosSettings(DEFAULT_BIOS_SETTINGS);
+    setShowcase3dMode(false);
     setPostRun(null);
     setLastAudioCue(null);
     setState(
@@ -516,6 +534,12 @@ export default function App() {
         return;
       }
 
+      if (advancedBiosOpen && event.key === 'Escape') {
+        event.preventDefault();
+        setAdvancedBiosOpen(false);
+        return;
+      }
+
       if (shopOpen && event.key === 'Escape') {
         event.preventDefault();
         setShopOpen(false);
@@ -542,7 +566,15 @@ export default function App() {
         return;
       }
 
-      if (state.screen !== 'playing' || shopOpen || infoPartId !== null || audioPanelOpen) return;
+      if (
+        state.screen !== 'playing' ||
+        shopOpen ||
+        infoPartId !== null ||
+        audioPanelOpen ||
+        advancedBiosOpen
+      ) {
+        return;
+      }
 
       const lower = event.key.toLowerCase();
       if (lower === 'r' && state.phase === 'bench') {
@@ -568,6 +600,7 @@ export default function App() {
     shopOpen,
     infoPartId,
     audioPanelOpen,
+    advancedBiosOpen,
     startWorkshopSession,
     handleTogglePause,
     handleRotateCpu,
@@ -600,6 +633,10 @@ export default function App() {
   const psuCapacity = getPsuCapacityWatts(state);
   const buildEval = evaluateBuildLoadout(state.purchasedModules, state.orderId);
   const activeOrder = CLIENT_ORDERS[state.orderId];
+  const activeBiosSummary =
+    postRun !== null
+      ? runBenchmarkSimulation(state.purchasedModules, state.orderId, biosSettings).biosSummaryLabel
+      : undefined;
 
   return (
     <div className="min-h-screen bg-neutral-50 text-neutral-900 flex flex-col">
@@ -664,27 +701,37 @@ export default function App() {
             </div>
           </div>
 
-          {/* Kontrol utilitas: Toko Modul, Suara, Mixer Audio, Jeda, Ulang */}
+          {/* Kontrol utilitas: Ringkasan POST (mode lihat 3D) atau Toko Modul, Suara, Mixer Audio, Jeda, Ulang */}
           <div className="flex items-center gap-1.5 shrink-0">
-            <button
-              type="button"
-              onClick={(e) => {
-                e.currentTarget.blur();
-                setShopCategory('all');
-                setShopOpen(true);
-              }}
-              data-testid="hud-open-shop"
-              className={`min-h-10 px-3 py-1.5 rounded-xl text-xs font-semibold transition-colors flex items-center gap-1.5 whitespace-nowrap focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700 ${
-                buildEval.missingSlots.length > 0
-                  ? 'bg-blue-700 hover:bg-blue-800 text-white'
-                  : 'border border-neutral-300 bg-white hover:bg-neutral-100 text-neutral-900'
-              }`}
-            >
-              <ShoppingBag className="w-4 h-4 shrink-0" aria-hidden="true" />
-              <span>
-                Toko Modul ({buildEval.ownedCount}/{buildEval.totalRequiredCount})
-              </span>
-            </button>
+            {state.screen === 'gameover' && showcase3dMode ? (
+              <button
+                type="button"
+                onClick={() => setShowcase3dMode(false)}
+                className="min-h-10 px-3 py-1.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold transition-colors whitespace-nowrap focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700"
+              >
+                Ringkasan POST
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.currentTarget.blur();
+                  setShopCategory('all');
+                  setShopOpen(true);
+                }}
+                data-testid="hud-open-shop"
+                className={`min-h-10 px-3 py-1.5 rounded-xl text-xs font-semibold transition-colors flex items-center gap-1.5 whitespace-nowrap focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700 ${
+                  buildEval.missingSlots.length > 0
+                    ? 'bg-blue-700 hover:bg-blue-800 text-white'
+                    : 'border border-neutral-300 bg-white hover:bg-neutral-100 text-neutral-900'
+                }`}
+              >
+                <ShoppingBag className="w-4 h-4 shrink-0" aria-hidden="true" />
+                <span>
+                  Toko Modul ({buildEval.ownedCount}/{buildEval.totalRequiredCount})
+                </span>
+              </button>
+            )}
 
             <button
               type="button"
@@ -797,6 +844,9 @@ export default function App() {
         <PostTerminalOverlay
           lines={postRun.lines}
           passed={postRun.pendingOutcome.ok}
+          paused={advancedBiosOpen}
+          biosSummaryLabel={activeBiosSummary}
+          onOpenAdvancedBios={() => setAdvancedBiosOpen(true)}
           onLineRevealed={handlePostLineRevealed}
           onComplete={handlePostComplete}
         />
@@ -826,10 +876,12 @@ export default function App() {
       )}
 
       {/* Modal Kemenangan / Ringkasan BIOS POST & Pembayaran Jasa Bengkel */}
-      {state.screen === 'gameover' && !benchmarkOpen && (
+      {state.screen === 'gameover' && !benchmarkOpen && !showcase3dMode && (
         <VictoryModal
           state={state}
+          biosSettings={biosSettings}
           bestScore={bestScore}
+          onInspectPowered3D={() => setShowcase3dMode(true)}
           onOpenBenchmarkLab={() => setBenchmarkOpen(true)}
           onRestartWithShop={() => startWorkshopSession({ openShopFirst: true })}
           onBackToTitle={handleBackToTitle}
@@ -838,7 +890,28 @@ export default function App() {
 
       {/* Modal Laboratorium Uji Benchmark, FPS & UEFI BIOS Tuning */}
       {state.screen === 'gameover' && benchmarkOpen && (
-        <BenchmarkLabModal state={state} onClose={() => setBenchmarkOpen(false)} />
+        <BenchmarkLabModal
+          state={state}
+          bios={biosSettings}
+          onChangeBios={setBiosSettings}
+          onOpenAdvancedBios={() => setAdvancedBiosOpen(true)}
+          onClose={() => setBenchmarkOpen(false)}
+        />
+      )}
+
+      {/* Modal Advanced BIOS Settings (XMP RAM, Voltase CPU, Kurva Kipas PWM Manual) */}
+      {advancedBiosOpen && (
+        <AdvancedBiosModal
+          state={state}
+          initialSettings={biosSettings}
+          openedFromPost={postRun !== null}
+          onSaveAndApply={(next) => {
+            setBiosSettings(next);
+            setAdvancedBiosOpen(false);
+            triggerSound('select');
+          }}
+          onCancel={() => setAdvancedBiosOpen(false)}
+        />
       )}
 
       {/* Modal Info Edukasi Hardware */}

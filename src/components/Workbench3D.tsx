@@ -243,6 +243,7 @@ export function Workbench3D({
   return (
     <div
       data-testid="workbench-3d-stage"
+      data-powered-on={state.fansSpinning && state.phase === 'case' ? 'true' : 'false'}
       onDragOver={handleDragOver}
       onDragLeave={() => setDragHover(false)}
       onDrop={handleDrop}
@@ -261,7 +262,12 @@ export function Workbench3D({
       {/* Lencana info sudut kiri atas (bebas halangan tengah & tanpa backdrop-blur) */}
       <div className="pointer-events-none absolute top-2.5 left-2.5 flex items-center gap-1.5 rounded-lg bg-slate-950/90 border border-slate-700 px-2.5 py-1 text-[11px] font-mono text-slate-200">
         <Rotate3d className="w-3.5 h-3.5 text-sky-400 shrink-0" aria-hidden="true" />
-        <span>{hoveredLabel ?? 'Seret putar 3D · Gulir zoom · Klik slot'}</span>
+        <span>
+          {hoveredLabel ??
+            (state.fansSpinning && state.phase === 'case'
+              ? 'PC Menyala · Pencahayaan RGB & Pantulan Meja Aktif'
+              : 'Seret putar 3D · Gulir zoom · Klik slot')}
+        </span>
       </div>
 
       {/* Dok Kontrol Bawah Terpadu yang dapat dilipat (zero viewport occlusion) */}
