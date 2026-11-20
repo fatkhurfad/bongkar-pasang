@@ -24,6 +24,7 @@ import {
   type AssemblyState,
   type PostLedKey,
 } from '../lib/assemblyEngine';
+import { type MonitorOsId } from '../lib/monitorDisplay';
 import { Workbench3D } from './Workbench3D';
 
 export type WorkbenchViewMode = '3d' | '2d';
@@ -32,6 +33,13 @@ interface WorkbenchStageProps {
   state: AssemblyState;
   viewMode: WorkbenchViewMode;
   lastAudioCue: string | null;
+  monitorOs: MonitorOsId;
+  onChangeMonitorOs: (os: MonitorOsId) => void;
+  isPostRunning: boolean;
+  biosSummary: string;
+  benchmarkScore: number;
+  cpuLoadTempC: number;
+  focusSetupSignal?: number;
   onToggleViewMode: (mode: WorkbenchViewMode) => void;
   onSlotInteract: (slotId: SlotId, droppedPartId?: PartId) => void;
   onToggleCpuLatch: () => void;
@@ -45,6 +53,13 @@ export function WorkbenchStage({
   state,
   viewMode,
   lastAudioCue,
+  monitorOs,
+  onChangeMonitorOs,
+  isPostRunning,
+  biosSummary,
+  benchmarkScore,
+  cpuLoadTempC,
+  focusSetupSignal = 0,
   onToggleViewMode,
   onSlotInteract,
   onToggleCpuLatch,
@@ -272,6 +287,13 @@ export function WorkbenchStage({
       {viewMode === '3d' ? (
         <Workbench3D
           state={state}
+          monitorOs={monitorOs}
+          onChangeMonitorOs={onChangeMonitorOs}
+          isPostRunning={isPostRunning}
+          biosSummary={biosSummary}
+          benchmarkScore={benchmarkScore}
+          cpuLoadTempC={cpuLoadTempC}
+          focusSetupSignal={focusSetupSignal}
           onSlotInteract={onSlotInteract}
           onToggleCpuLatch={onToggleCpuLatch}
           onTogglePsuSwitch={onTogglePsuSwitch}

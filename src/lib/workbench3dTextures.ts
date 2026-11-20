@@ -597,3 +597,486 @@ export function createDynamicBadgeTexture(
   tex.anisotropy = maxAnisotropy;
   return tex;
 }
+
+export interface MonitorScreenTextureOptions {
+  mode: 'off' | 'standby' | 'post' | 'error' | 'desktop';
+  osId: 'windows' | 'macos';
+  cpuModel: string;
+  gpuModel: string;
+  ramLabel: string;
+  biosSummary: string;
+  benchmarkScore: number;
+  cpuTempC: number;
+  faultLed: string | null;
+}
+
+function drawRoundedRect(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number,
+): void {
+  const rad = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rad, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rad);
+  ctx.arcTo(x + w, y + h, x, y + h, rad);
+  ctx.arcTo(x, y + h, x, y, rad);
+  ctx.arcTo(x, y, x + w, y, rad);
+  ctx.closePath();
+}
+
+/**
+ * Menghasilkan tekstur layar monitor IPS 16:9 (1024x576) secara prosedural
+ * untuk kondisi mati, standby, UEFI POST, error, Desktop Windows 11, dan Desktop macOS.
+ */
+export function createMonitorScreenTexture(
+  opts: MonitorScreenTextureOptions,
+  maxAnisotropy: number,
+): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 1024;
+  canvas.height = 576;
+  const ctx = canvas.getContext('2d')!;
+
+  if (opts.mode === 'off') {
+    const grad = ctx.createLinearGradient(0, 0, 1024, 576);
+    grad.addColorStop(0, '#070b12');
+    grad.addColorStop(0.5, '#0b101a');
+    grad.addColorStop(1, '#06090f');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 1024, 576);
+
+    // Kilau anti-glare diagonal lembut pada panel mati
+    ctx.fillStyle = 'rgba(148, 163, 184, 0.035)';
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(420, 0);
+    ctx.lineTo(140, 576);
+    ctx.lineTo(0, 576);
+    ctx.closePath();
+    ctx.fill();
+  } else if (opts.mode === 'standby') {
+    ctx.fillStyle = '#060a14';
+    ctx.fillRect(0, 0, 1024, 576);
+
+    drawRoundedRect(ctx, 262, 206, 500, 164, 18);
+    ctx.fillStyle = '#0f172a';
+    ctx.fill();
+    ctx.strokeStyle = '#f59e0b';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+
+    ctx.fillStyle = '#fbbf24';
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 26px monospace';
+    ctx.fillText('DISPLAYPORT 1.4 · STANDBY', 512, 268);
+    ctx.fillStyle = '#cbd5e1';
+    ctx.font = '600 19px sans-serif';
+    ctx.fillText('Arus PSU Siaga Terdeteksi — Tekan Tombol Power PC', 512, 314);
+    ctx.fillStyle = '#64748b';
+    ctx.font = '500 16px monospace';
+    ctx.fillText(`Target OS: ${opts.osId === 'windows' ? 'Windows 11 Pro' : 'macOS Sequoia'}`, 512, 346);
+  } else if (opts.mode === 'post') {
+    ctx.fillStyle = '#040812';
+    ctx.fillRect(0, 0, 1024, 576);
+
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(0, 0, 1024, 62);
+    ctx.fillStyle = '#38bdf8';
+    ctx.font = 'bold 24px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText('RAKITPC UEFI BIOS VER 2.6 — POWER-ON SELF-TEST', 34, 40);
+
+    const lines = [
+      `[CPU]   ${opts.cpuModel} — OK`,
+      `[MEM]   ${opts.ramLabel} — DUAL-CHANNEL OK`,
+      `[GPU]   ${opts.gpuModel} — DISPLAYPORT OUTPUT ACTIVE`,
+      `[BIOS]  ${opts.biosSummary}`,
+      `[BOOT]  Memuat ${opts.osId === 'windows' ? 'Windows 11 Boot Manager' : 'OpenCore EFI (macOS Sequoia)'}...`,
+    ];
+    ctx.font = '600 21px monospace';
+    lines.forEach((line, idx) => {
+      ctx.fillStyle = idx === lines.length - 1 ? '#34d399' : '#e2e8f0';
+      ctx.fillText(line, 38, 128 + idx * 48);
+    });
+
+    // Bar progres boot bawah
+    drawRoundedRect(ctx, 38, 430, 948, 20, 10);
+    ctx.fillStyle = '#1e293b';
+    ctx.fill();
+    drawRoundedRect(ctx, 38, 430, 740, 20, 10);
+    ctx.fillStyle = '#38bdf8';
+    ctx.fill();
+
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '600 18px monospace';
+    ctx.fillText('Tekan DEL atau F2 untuk masuk ke Advanced BIOS Settings', 38, 514);
+  } else if (opts.mode === 'error') {
+    ctx.fillStyle = '#14060a';
+    ctx.fillRect(0, 0, 1024, 576);
+
+    drawRoundedRect(ctx, 180, 160, 664, 256, 20);
+    ctx.fillStyle = '#240b12';
+    ctx.fill();
+    ctx.strokeStyle = '#ef4444';
+    ctx.lineWidth = 4;
+    ctx.stroke();
+
+    ctx.fillStyle = '#f87171';
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 34px monospace';
+    ctx.fillText('POST HALTED · NO VIDEO SIGNAL', 512, 240);
+    ctx.fillStyle = '#fecaca';
+    ctx.font = '600 22px sans-serif';
+    ctx.fillText(
+      opts.faultLed
+        ? `Periksa LED Diagnostik ${opts.faultLed} pada motherboard`
+        : 'Periksa pemasangan komponen dan kabel daya casing',
+      512,
+      305,
+    );
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '500 18px monospace';
+    ctx.fillText('RakitPC UEFI Diagnostic Guard', 512, 362);
+  } else if (opts.osId === 'windows') {
+    // =====================================================================
+    // DESKTOP WINDOWS 11 PRO (Wallpaper Bloom Biru + Taskbar Tengah + Panel Monitor)
+    // =====================================================================
+    const bg = ctx.createLinearGradient(0, 0, 1024, 576);
+    bg.addColorStop(0, '#091a3a');
+    bg.addColorStop(0.5, '#123a78');
+    bg.addColorStop(1, '#08152e');
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, 1024, 576);
+
+    // Kelopak cahaya Bloom khas Windows 11
+    const bloom1 = ctx.createRadialGradient(560, 275, 25, 560, 275, 290);
+    bloom1.addColorStop(0, 'rgba(96, 165, 250, 0.92)');
+    bloom1.addColorStop(0.45, 'rgba(37, 99, 235, 0.58)');
+    bloom1.addColorStop(1, 'rgba(15, 23, 42, 0)');
+    ctx.fillStyle = bloom1;
+    ctx.fillRect(160, 0, 820, 520);
+
+    const bloom2 = ctx.createRadialGradient(470, 245, 20, 470, 245, 210);
+    bloom2.addColorStop(0, 'rgba(125, 211, 252, 0.85)');
+    bloom2.addColorStop(0.55, 'rgba(56, 189, 248, 0.35)');
+    bloom2.addColorStop(1, 'rgba(15, 23, 42, 0)');
+    ctx.fillStyle = bloom2;
+    ctx.fillRect(200, 20, 600, 460);
+
+    // Ikon desktop di kiri
+    const deskIcons = [
+      { label: 'This PC', color: '#38bdf8' },
+      { label: 'Benchmark', color: '#34d399' },
+      { label: 'BIOS Info', color: '#fbbf24' },
+    ];
+    deskIcons.forEach((ic, idx) => {
+      const iy = 34 + idx * 88;
+      drawRoundedRect(ctx, 28, iy, 46, 44, 10);
+      ctx.fillStyle = ic.color;
+      ctx.fill();
+      ctx.fillStyle = '#f8fafc';
+      ctx.textAlign = 'center';
+      ctx.font = '600 13px sans-serif';
+      ctx.fillText(ic.label, 51, iy + 64);
+    });
+
+    // Jendela Aplikasi RakitPC System Monitor bergaya Windows 11 Mica
+    drawRoundedRect(ctx, 188, 56, 650, 404, 16);
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(148, 163, 184, 0.42)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Titlebar Windows 11
+    ctx.fillStyle = 'rgba(30, 41, 59, 0.92)';
+    drawRoundedRect(ctx, 188, 56, 650, 46, 16);
+    ctx.fill();
+    ctx.fillStyle = '#e2e8f0';
+    ctx.textAlign = 'left';
+    ctx.font = 'bold 18px sans-serif';
+    ctx.fillText('Windows 11 Pro · RakitPC Hardware Monitor', 214, 85);
+
+    // Tombol kontrol kanan atas Windows (-, □, ×)
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = 'bold 18px monospace';
+    ctx.fillText('—   □   ×', 742, 85);
+
+    // Kartu Skor Benchmark + Status Aktif
+    drawRoundedRect(ctx, 214, 122, 206, 134, 12);
+    ctx.fillStyle = 'rgba(30, 58, 138, 0.65)';
+    ctx.fill();
+    ctx.strokeStyle = '#38bdf8';
+    ctx.lineWidth = 1.8;
+    ctx.stroke();
+
+    ctx.fillStyle = '#93c5fd';
+    ctx.font = '600 15px sans-serif';
+    ctx.fillText('SKOR BENCHMARK', 232, 152);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 54px monospace';
+    ctx.fillText(`${opts.benchmarkScore}`, 232, 214);
+    ctx.fillStyle = '#7dd3fc';
+    ctx.font = '600 20px monospace';
+    ctx.fillText('/100', 318, 214);
+    ctx.fillStyle = '#34d399';
+    ctx.font = '600 14px monospace';
+    ctx.fillText(`Suhu Beban: ${opts.cpuTempC}°C`, 232, 242);
+
+    // Kartu Spesifikasi Sistem Aktif
+    drawRoundedRect(ctx, 438, 122, 376, 134, 12);
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(100, 116, 139, 0.5)';
+    ctx.stroke();
+
+    ctx.fillStyle = '#38bdf8';
+    ctx.font = 'bold 14px monospace';
+    ctx.fillText('SPESIFIKASI PERANGKAT AKTIF', 456, 148, 344);
+    ctx.fillStyle = '#f1f5f9';
+    ctx.font = '600 15px monospace';
+    ctx.fillText(`CPU: ${opts.cpuModel}`, 456, 180, 344);
+    ctx.fillText(`GPU: ${opts.gpuModel}`, 456, 208, 344);
+    ctx.fillText(`RAM: ${opts.ramLabel}`, 456, 236, 344);
+
+    // Bar BIOS & Status Semua Komponen Menyala
+    drawRoundedRect(ctx, 214, 276, 600, 72, 12);
+    ctx.fillStyle = 'rgba(6, 78, 59, 0.45)';
+    ctx.fill();
+    ctx.strokeStyle = '#10b981';
+    ctx.stroke();
+    ctx.fillStyle = '#6ee7b7';
+    ctx.font = 'bold 16px monospace';
+    ctx.fillText('● SEMUA SISTEM MENYALA NORMAL (WINDOWS 11)', 234, 308, 560);
+    ctx.fillStyle = '#e2e8f0';
+    ctx.font = '600 14px monospace';
+    ctx.fillText(`BIOS: ${opts.biosSummary}`, 234, 334, 560);
+
+    // Grafik pemakaian CPU/GPU real-time statis bergaya Task Manager
+    drawRoundedRect(ctx, 214, 364, 600, 74, 10);
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+    ctx.fill();
+    ctx.strokeStyle = '#334155';
+    ctx.stroke();
+    ctx.strokeStyle = '#38bdf8';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    const graphY = [418, 412, 405, 398, 402, 390, 384, 388, 378, 382, 376];
+    graphY.forEach((gy, i) => {
+      const gx = 230 + i * 56;
+      if (i === 0) ctx.moveTo(gx, gy);
+      else ctx.lineTo(gx, gy);
+    });
+    ctx.stroke();
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '600 13px monospace';
+    ctx.fillText('CPU & GPU TELEMETRY · 144Hz DISPLAYPORT', 232, 384);
+
+    // Taskbar Windows 11 di bagian bawah
+    ctx.fillStyle = 'rgba(11, 18, 32, 0.94)';
+    ctx.fillRect(0, 514, 1024, 62);
+    ctx.fillStyle = 'rgba(148, 163, 184, 0.25)';
+    ctx.fillRect(0, 514, 1024, 1.5);
+
+    // Logo Start 4-kotak Windows biru di tengah taskbar
+    const sx = 414;
+    ctx.fillStyle = '#38bdf8';
+    ctx.fillRect(sx, 531, 12, 12);
+    ctx.fillRect(sx + 15, 531, 12, 12);
+    ctx.fillRect(sx, 546, 12, 12);
+    ctx.fillRect(sx + 15, 546, 12, 12);
+
+    // Ikon aplikasi taskbar tengah
+    const tbColors = ['#fbbf24', '#34d399', '#60a5fa', '#a78bfa', '#f472b6'];
+    tbColors.forEach((col, i) => {
+      drawRoundedRect(ctx, 464 + i * 44, 529, 30, 30, 7);
+      ctx.fillStyle = col;
+      ctx.fill();
+    });
+
+    // Jam & status tray kanan
+    ctx.fillStyle = '#e2e8f0';
+    ctx.textAlign = 'right';
+    ctx.font = 'bold 15px sans-serif';
+    ctx.fillText('22:30', 996, 542);
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '500 12px sans-serif';
+    ctx.fillText('19/11/2026', 996, 560);
+  } else {
+    // =====================================================================
+    // DESKTOP macOS SEQUOIA (Menu Bar Atas + Wallpaper Senja + Floating Dock + About This Mac)
+    // =====================================================================
+    const macBg = ctx.createLinearGradient(0, 0, 1024, 576);
+    macBg.addColorStop(0, '#1e1b4b');
+    macBg.addColorStop(0.45, '#581c87');
+    macBg.addColorStop(0.78, '#be185d');
+    macBg.addColorStop(1, '#f97316');
+    ctx.fillStyle = macBg;
+    ctx.fillRect(0, 0, 1024, 576);
+
+    // Siluet pegunungan & cahaya aurora khas wallpaper macOS
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.38)';
+    ctx.beginPath();
+    ctx.moveTo(0, 420);
+    ctx.quadraticCurveTo(240, 250, 520, 370);
+    ctx.quadraticCurveTo(780, 460, 1024, 300);
+    ctx.lineTo(1024, 576);
+    ctx.lineTo(0, 576);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = 'rgba(30, 27, 75, 0.45)';
+    ctx.beginPath();
+    ctx.moveTo(0, 470);
+    ctx.quadraticCurveTo(320, 340, 660, 430);
+    ctx.quadraticCurveTo(860, 480, 1024, 390);
+    ctx.lineTo(1024, 576);
+    ctx.lineTo(0, 576);
+    ctx.closePath();
+    ctx.fill();
+
+    // Menu Bar macOS atas dengan emblem vektor (bebas kotak glyph hilang di semua OS)
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.76)';
+    ctx.fillRect(0, 0, 1024, 38);
+
+    // Emblem buah/daun vektor macOS di kiri atas
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(28, 22, 6.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(30, 12.5, 3.2, 1.8, -0.6, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.textAlign = 'left';
+    ctx.font = 'bold 16px sans-serif';
+    ctx.fillText('Finder   File   Edit   View   Go   Window   Help', 48, 25);
+    ctx.textAlign = 'right';
+    ctx.font = '600 15px sans-serif';
+    ctx.fillText('Wi-Fi   100%   Kam 22:30', 1000, 25);
+
+    // Jendela macOS (About This Mac & RakitPC Monitor)
+    drawRoundedRect(ctx, 178, 72, 668, 386, 20);
+    ctx.fillStyle = 'rgba(17, 24, 39, 0.86)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Traffic lights khas macOS (Merah, Kuning, Hijau)
+    const dots = ['#ef4444', '#f59e0b', '#22c55e'];
+    dots.forEach((c, i) => {
+      ctx.fillStyle = c;
+      ctx.beginPath();
+      ctx.arc(208 + i * 24, 98, 7.5, 0, Math.PI * 2);
+      ctx.fill();
+    });
+    ctx.fillStyle = '#e2e8f0';
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 17px sans-serif';
+    ctx.fillText('macOS Sequoia 15 · RakitPC Workstation Monitor', 512, 104);
+
+    // Divider titlebar
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.12)';
+    ctx.fillRect(178, 122, 668, 1.5);
+
+    // Kolom kiri: Lingkaran status & Skor Benchmark
+    ctx.beginPath();
+    ctx.arc(306, 246, 76, 0, Math.PI * 2);
+    const badgeGrad = ctx.createLinearGradient(230, 170, 382, 322);
+    badgeGrad.addColorStop(0, '#a855f7');
+    badgeGrad.addColorStop(1, '#38bdf8');
+    ctx.fillStyle = badgeGrad;
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.arc(306, 246, 62, 0, Math.PI * 2);
+    ctx.fillStyle = '#0f172a';
+    ctx.fill();
+
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 44px monospace';
+    ctx.fillText(`${opts.benchmarkScore}`, 306, 256);
+    ctx.fillStyle = '#c084fc';
+    ctx.font = '600 15px monospace';
+    ctx.fillText('SKOR /100', 306, 282);
+
+    ctx.fillStyle = '#6ee7b7';
+    ctx.font = 'bold 15px monospace';
+    ctx.fillText(`Suhu Beban ${opts.cpuTempC}°C`, 306, 354);
+
+    // Kolom kanan: Detail Mac / OpenCore Hardware
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 26px sans-serif';
+    ctx.fillText('RakitPC Pro Tower', 420, 176);
+    ctx.fillStyle = '#d8b4fe';
+    ctx.font = '600 15px monospace';
+    ctx.fillText('macOS Sequoia 15 · OpenCore EFI Active', 420, 202);
+
+    const rows = [
+      ['Prosesor', opts.cpuModel],
+      ['Grafis', opts.gpuModel],
+      ['Memori', opts.ramLabel],
+      ['BIOS', opts.biosSummary],
+    ];
+    rows.forEach(([k, v], i) => {
+      const ry = 244 + i * 32;
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = '600 14px sans-serif';
+      ctx.fillText(k, 420, ry);
+      ctx.fillStyle = '#f8fafc';
+      ctx.font = '600 14px monospace';
+      ctx.fillText(v, 504, ry, 318);
+    });
+
+    // Status pill bawah jendela
+    drawRoundedRect(ctx, 420, 384, 392, 42, 10);
+    ctx.fillStyle = 'rgba(16, 185, 129, 0.22)';
+    ctx.fill();
+    ctx.strokeStyle = '#34d399';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = '#6ee7b7';
+    ctx.font = 'bold 15px monospace';
+    ctx.fillText('● SEMUA KOMPONEN & LAYAR AKTIF', 440, 410);
+
+    // Floating macOS Glass Dock di bawah tengah
+    drawRoundedRect(ctx, 272, 492, 480, 68, 22);
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.22)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    const dockApps = [
+      { bg: '#2563eb', glyph: 'F' },
+      { bg: '#0ea5e9', glyph: 'S' },
+      { bg: '#10b981', glyph: 'M' },
+      { bg: '#111827', glyph: '>_' },
+      { bg: '#f59e0b', glyph: 'B' },
+      { bg: '#ec4899', glyph: 'A' },
+      { bg: '#64748b', glyph: '⚙' },
+    ];
+    dockApps.forEach((app, i) => {
+      const ax = 296 + i * 64;
+      drawRoundedRect(ctx, ax, 504, 46, 46, 12);
+      ctx.fillStyle = app.bg;
+      ctx.fill();
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'center';
+      ctx.font = 'bold 20px monospace';
+      ctx.fillText(app.glyph, ax + 23, 534);
+    });
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = maxAnisotropy;
+  return tex;
+}

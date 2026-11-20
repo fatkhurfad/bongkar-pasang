@@ -10,6 +10,7 @@ import {
   getEffectivePartInfo,
   getPsuCapacityWatts,
   getPurchasedSku,
+  getRamSummaryLabel,
   hasPart,
   isPartDamaged,
   type AssemblyState,
@@ -18,12 +19,18 @@ import {
 import {
   createDynamicBadgeTexture,
   createDynamicCpuIhsTexture,
+  createMonitorScreenTexture,
   createProceduralTexturePack,
   disposeProceduralTexturePack,
 } from './workbench3dTextures';
 import { computeDynamicLightingRig, RGB_THEME_COLORS } from './workbenchLighting';
+import {
+  resolveMonitorDisplayState,
+  type MonitorOsId,
+  type MonitorDisplayState,
+} from './monitorDisplay';
 
-export type CameraPresetId = 'isometric' | 'top' | 'detail' | 'side';
+export type CameraPresetId = 'isometric' | 'top' | 'detail' | 'side' | 'setup' | 'monitor';
 export type CaseFinishId = 'carbon' | 'white' | 'titanium';
 export type RgbThemeId = 'blue' | 'cyan' | 'emerald' | 'amber' | 'off';
 export type StudioLightId = 'studio' | 'dark_rgb';
@@ -35,6 +42,7 @@ export interface SceneVisualOptions {
   glassPanelClosed: boolean;
   showAirflow: boolean;
   explodedAmount: number; // 0.0 - 1.0
+  monitorOs: MonitorOsId;
 }
 
 export const DEFAULT_SCENE_VISUAL_OPTIONS: SceneVisualOptions = {
@@ -44,13 +52,29 @@ export const DEFAULT_SCENE_VISUAL_OPTIONS: SceneVisualOptions = {
   glassPanelClosed: false,
   showAirflow: false,
   explodedAmount: 0,
+  monitorOs: 'windows',
+};
+
+export interface MonitorTelemetrySnapshot {
+  postRunning: boolean;
+  biosSummary: string;
+  benchmarkScore: number;
+  cpuLoadTempC: number;
+}
+
+const DEFAULT_MONITOR_TELEMETRY: MonitorTelemetrySnapshot = {
+  postRunning: false,
+  biosSummary: 'JEDEC 4800 · 1,22 V · Fan Standar',
+  benchmarkScore: 84,
+  cpuLoadTempC: 68,
 };
 
 export type HitTargetAction =
   | { type: 'slot'; slotId: SlotId; label: string }
   | { type: 'cpu_latch'; label: string }
   | { type: 'psu_switch'; label: string }
-  | { type: 'power_button'; label: string };
+  | { type: 'power_button'; label: string }
+  | { type: 'monitor_screen'; label: string };
 
 export interface Workbench3DCallbacks {
   onSlotInteract: (slotId: SlotId, droppedPartId?: PartId) => void;
@@ -58,10 +82,11 @@ export interface Workbench3DCallbacks {
   onTogglePsuSwitch: () => void;
   onRunPost: () => void;
   onHoverChange: (label: string | null) => void;
+  onMonitorScreenClick?: () => void;
 }
 
 export interface Workbench3DController {
-  syncState: (nextState: AssemblyState) => void;
+  syncState: (nextState: AssemblyState, telemetry?: MonitorTelemetrySnapshot) => void;
   setVisualOptions: (nextOptions: SceneVisualOptions) => void;
   setCameraPreset: (preset: CameraPresetId) => void;
   handleExternalDrop: (clientX: number, clientY: number, partId: PartId) => void;
@@ -400,6 +425,7 @@ export function createWorkbench3DController(
 ): Workbench3DController {
   const isSoftwareGl = detectSoftwareWebGL();
   let currentState = initialState;
+  let currentTelemetry: MonitorTelemetrySnapshot = { ...DEFAULT_MONITOR_TELEMETRY };
   let visualOpts: SceneVisualOptions = { ...initialVisualOptions };
 
   const scene = new THREE.Scene();
@@ -483,12 +509,17 @@ export function createWorkbench3DController(
   frontFanSpillLight.position.set(3.45, 1.95, 0.35);
   scene.add(frontFanSpillLight);
 
+  // Cahaya pantulan layar monitor IPS 27" ke keyboard, mouse, dan meja kerja
+  const monitorScreenLight = new THREE.PointLight(0x2563eb, 0, 10.5, 1.6);
+  monitorScreenLight.position.set(-4.85, 2.55, 1.55);
+  scene.add(monitorScreenLight);
+
   // OrbitControls
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = !isSoftwareGl;
   controls.dampingFactor = 0.08;
   controls.minDistance = 3.0;
-  controls.maxDistance = 15.5;
+  controls.maxDistance = 18.5;
   controls.maxPolarAngle = Math.PI * 0.49;
   controls.enablePan = false;
 
@@ -496,7 +527,7 @@ export function createWorkbench3DController(
   // MEJA BENGKEL TEKNISI + MATRAS ESD + PANTULAN CAHAYA RGB + PROPS BAUT
   // =========================================================================
   const workshopDesk = new THREE.Mesh(
-    new THREE.BoxGeometry(24, 0.4, 18),
+    new THREE.BoxGeometry(30, 0.4, 20),
     new THREE.MeshPhysicalMaterial({
       map: texPack.deskWoodAlbedo,
       roughness: 0.56,
@@ -505,7 +536,7 @@ export function createWorkbench3DController(
       clearcoatRoughness: 0.36,
     }),
   );
-  workshopDesk.position.set(0, -0.22, 0);
+  workshopDesk.position.set(-1.5, -0.22, 0);
   workshopDesk.receiveShadow = !isSoftwareGl;
   scene.add(workshopDesk);
 
@@ -592,6 +623,24 @@ export function createWorkbench3DController(
   caseUnderglowPlane.position.set(0.05, 0.036, 0.35);
   caseUnderglowPlane.visible = false;
   scene.add(caseUnderglowPlane);
+
+  // Pantulan cahaya layar monitor IPS (biru Windows / ungu macOS) ke meja & periferal
+  const monitorDeskGlowMat = new THREE.MeshBasicMaterial({
+    map: texPack.rgbDeskGlow,
+    color: 0x2563eb,
+    transparent: true,
+    opacity: 0,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
+  });
+  const monitorDeskGlowPlane = new THREE.Mesh(new THREE.PlaneGeometry(7.2, 5.0), monitorDeskGlowMat);
+  monitorDeskGlowPlane.rotation.x = -Math.PI / 2;
+  monitorDeskGlowPlane.position.set(-4.85, 0.044, 1.55);
+  monitorDeskGlowPlane.visible = false;
+  scene.add(monitorDeskGlowPlane);
 
   // Material PBR Bersama (variasi roughness & metalness nyata antar logam, PCB, dan plastik)
   const pcbMat = new THREE.MeshStandardMaterial({
@@ -1771,6 +1820,232 @@ export function createWorkbench3DController(
   );
 
   // =========================================================================
+  // STASIUN KERJA 3D: MONITOR IPS 27" + KEYBOARD MEKANIKAL RGB + MOUSE RGB + KABEL DISPLAYPORT
+  // =========================================================================
+  const workstationGroup = new THREE.Group();
+  caseGroup.add(workstationGroup);
+
+  // Alas meja kain gelap (deskmat) untuk monitor, keyboard, dan mouse di sisi kiri casing
+  const deskMatMesh = new THREE.Mesh(
+    new THREE.BoxGeometry(6.1, 0.03, 4.35),
+    new THREE.MeshStandardMaterial({
+      color: 0x111827,
+      roughness: 0.88,
+      metalness: 0.04,
+    }),
+  );
+  deskMatMesh.position.set(-5.05, 0.015, 1.05);
+  deskMatMesh.receiveShadow = !isSoftwareGl;
+  workstationGroup.add(deskMatMesh);
+
+  // Material RGB khusus periferal (keyboard & mouse) & ambient bias bar belakang monitor
+  const peripheralRgbMat = new THREE.MeshStandardMaterial({
+    color: 0x1e293b,
+    emissive: 0x000000,
+    emissiveIntensity: 0,
+    roughness: 0.25,
+    metalness: 0.15,
+  });
+  const monitorRearRgbMat = new THREE.MeshStandardMaterial({
+    color: 0x1e293b,
+    emissive: 0x000000,
+    emissiveIntensity: 0,
+    roughness: 0.28,
+    metalness: 0.1,
+  });
+  const monitorLedMat = new THREE.MeshStandardMaterial({
+    color: 0x1e293b,
+    emissive: 0x000000,
+    emissiveIntensity: 0,
+    roughness: 0.2,
+    metalness: 0.1,
+  });
+
+  // Tekstur layar monitor 16:9 dinamis (Windows 11 / macOS / POST / Standby / Off)
+  let currentMonitorSignature = '';
+  let activeMonitorTexture: THREE.CanvasTexture = createMonitorScreenTexture(
+    {
+      mode: 'off',
+      osId: visualOpts.monitorOs,
+      cpuModel: getEffectivePartInfo(initialState, 'cpu').model,
+      gpuModel: getEffectivePartInfo(initialState, 'gpu').model,
+      ramLabel: getRamSummaryLabel(initialState),
+      biosSummary: currentTelemetry.biosSummary,
+      benchmarkScore: currentTelemetry.benchmarkScore,
+      cpuTempC: currentTelemetry.cpuLoadTempC,
+      faultLed: null,
+    },
+    maxAniso,
+  );
+  const monitorScreenMat = new THREE.MeshStandardMaterial({
+    map: activeMonitorTexture,
+    emissiveMap: activeMonitorTexture,
+    emissive: 0xffffff,
+    emissiveIntensity: 0,
+    roughness: 0.16,
+    metalness: 0.04,
+  });
+
+  // Komposit 3D Monitor IPS 27"
+  const monitorGroup = new THREE.Group();
+  monitorGroup.position.set(-5.35, 0.03, -0.15);
+  monitorGroup.rotation.y = 0.22;
+  workstationGroup.add(monitorGroup);
+
+  // Kaki penyangga V aluminium kokoh + kolom leher + dudukan VESA
+  const standHub = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.07, 0.56), brushedDarkMetalMat);
+  standHub.position.set(0, 0.035, -0.2);
+  const standLegLeft = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.055, 1.38), aluminumMat);
+  standLegLeft.position.set(-0.62, 0.028, 0.22);
+  standLegLeft.rotation.y = -0.68;
+  const standLegRight = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.055, 1.38), aluminumMat);
+  standLegRight.position.set(0.62, 0.028, 0.22);
+  standLegRight.rotation.y = 0.68;
+  const standColumn = new THREE.Mesh(new THREE.BoxGeometry(0.28, 2.38, 0.15), brushedDarkMetalMat);
+  standColumn.position.set(0, 1.24, -0.24);
+  standColumn.castShadow = !isSoftwareGl;
+  const standTrim = new THREE.Mesh(new THREE.BoxGeometry(0.1, 2.15, 0.03), aluminumMat);
+  standTrim.position.set(0, 1.24, -0.16);
+  const vesaBlock = new THREE.Mesh(new THREE.BoxGeometry(0.96, 0.84, 0.16), darkPlasticMat);
+  vesaBlock.position.set(0, 2.52, -0.14);
+
+  // Bodi panel monitor bezel tipis + dagu bawah + layar IPS
+  const monitorChassis = new THREE.Mesh(new THREE.BoxGeometry(4.68, 2.74, 0.13), brushedDarkMetalMat);
+  monitorChassis.position.set(0, 2.56, 0);
+  monitorChassis.castShadow = !isSoftwareGl;
+  const monitorChin = new THREE.Mesh(new THREE.BoxGeometry(4.68, 0.15, 0.15), darkPlasticMat);
+  monitorChin.position.set(0, 1.21, 0.01);
+  const monitorLogoBar = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.035, 0.02), aluminumMat);
+  monitorLogoBar.position.set(0, 1.21, 0.09);
+
+  const monitorScreenMesh = new THREE.Mesh(new THREE.PlaneGeometry(4.48, 2.52), monitorScreenMat);
+  monitorScreenMesh.position.set(0, 2.6, 0.072);
+
+  // LED status power di pojok kanan bawah bezel monitor
+  const monitorStatusLed = new THREE.Mesh(new THREE.SphereGeometry(0.036, 10, 10), monitorLedMat);
+  monitorStatusLed.position.set(2.08, 1.21, 0.092);
+
+  // Strip lampu RGB bias di belakang bodi monitor
+  const monitorRearLightBar = new THREE.Mesh(
+    new THREE.BoxGeometry(3.45, 0.11, 0.06),
+    monitorRearRgbMat,
+  );
+  monitorRearLightBar.position.set(0, 2.56, -0.1);
+
+  monitorGroup.add(
+    standHub,
+    standLegLeft,
+    standLegRight,
+    standColumn,
+    standTrim,
+    vesaBlock,
+    monitorChassis,
+    monitorChin,
+    monitorLogoBar,
+    monitorScreenMesh,
+    monitorStatusLed,
+    monitorRearLightBar,
+  );
+
+  // Hitbox interaktif layar monitor agar pemain dapat mengklik layar untuk zoom langsung
+  const monitorHitMesh = new THREE.Mesh(
+    new THREE.BoxGeometry(4.55, 2.62, 0.24),
+    new THREE.MeshBasicMaterial({ visible: false }),
+  );
+  monitorHitMesh.position.set(0, 2.58, 0.04);
+  monitorHitMesh.layers.set(1);
+  monitorHitMesh.userData = {
+    key: 'monitor_screen',
+    action: { type: 'monitor_screen', label: 'Monitor IPS 27" — Klik untuk fokus layar' } as HitTargetAction,
+  };
+  monitorGroup.add(monitorHitMesh);
+  caseHitboxes.push(monitorHitMesh);
+
+  // Kabel DisplayPort 1.4 anyaman menghubungkan port GPU belakang PC ke belakang Monitor
+  const dpCableCurve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(-2.82, 2.18, -0.42),
+    new THREE.Vector3(-3.45, 1.55, -0.82),
+    new THREE.Vector3(-4.35, 0.42, -0.95),
+    new THREE.Vector3(-5.18, 1.15, -0.68),
+    new THREE.Vector3(-5.32, 2.02, -0.35),
+  ]);
+  const dpCableMesh = new THREE.Mesh(
+    new THREE.TubeGeometry(dpCableCurve, 26, 0.042, 8, false),
+    aioTubeMat,
+  );
+  workstationGroup.add(dpCableMesh);
+
+  // Komposit 3D Keyboard Mekanikal 65% dengan Backlight RGB & Keycaps InstancedMesh
+  const keyboardGroup = new THREE.Group();
+  keyboardGroup.position.set(-5.25, 0.032, 1.98);
+  keyboardGroup.rotation.y = 0.2;
+  workstationGroup.add(keyboardGroup);
+
+  const kbBase = new THREE.Mesh(new THREE.BoxGeometry(2.58, 0.11, 0.96), brushedDarkMetalMat);
+  kbBase.position.y = 0.055;
+  kbBase.castShadow = !isSoftwareGl;
+  const kbRgbPlate = new THREE.Mesh(new THREE.BoxGeometry(2.44, 0.042, 0.84), peripheralRgbMat);
+  kbRgbPlate.position.y = 0.1;
+  const kbFrontRgbStrip = new THREE.Mesh(new THREE.BoxGeometry(2.54, 0.036, 0.035), peripheralRgbMat);
+  kbFrontRgbStrip.position.set(0, 0.04, 0.49);
+
+  // 55 tombol keycap PBT mekanikal (InstancedMesh — satu draw call)
+  const keycapMat = new THREE.MeshStandardMaterial({
+    color: 0x0f172a,
+    roughness: 0.68,
+    metalness: 0.08,
+  });
+  const keycapGeo = new THREE.BoxGeometry(0.155, 0.068, 0.13);
+  const kbRows = 5;
+  const kbCols = 12;
+  const keyInst = new THREE.InstancedMesh(keycapGeo, keycapMat, kbRows * kbCols);
+  let kIdx = 0;
+  for (let r = 0; r < kbRows; r++) {
+    for (let c = 0; c < kbCols; c++) {
+      // Baris bawah (spacebar tengah digabung terpisah)
+      const isSpaceGap = r === 4 && c >= 3 && c <= 7;
+      _tmpObj.position.set(
+        -1.08 + c * 0.196,
+        isSpaceGap ? -10 : 0.145,
+        -0.31 + r * 0.155,
+      );
+      _tmpObj.rotation.set(0, 0, 0);
+      _tmpObj.scale.set(1, 1, 1);
+      _tmpObj.updateMatrix();
+      keyInst.setMatrixAt(kIdx++, _tmpObj.matrix);
+    }
+  }
+  keyInst.instanceMatrix.needsUpdate = true;
+  keyInst.computeBoundingSphere();
+
+  const kbSpacebar = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.068, 0.135), keycapMat);
+  kbSpacebar.position.set(-0.09, 0.145, 0.31);
+  keyboardGroup.add(kbBase, kbRgbPlate, kbFrontRgbStrip, keyInst, kbSpacebar);
+
+  // Komposit 3D Gaming Mouse RGB
+  const mouseGroup = new THREE.Group();
+  mouseGroup.position.set(-3.35, 0.032, 2.2);
+  mouseGroup.rotation.y = 0.12;
+  workstationGroup.add(mouseGroup);
+
+  const mouseBody = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.17, 0.8), darkPlasticMat);
+  mouseBody.position.y = 0.095;
+  mouseBody.castShadow = !isSoftwareGl;
+  const mouseTopShell = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.06, 0.66), brushedDarkMetalMat);
+  mouseTopShell.position.set(0, 0.185, 0.04);
+  const mouseScrollWheel = new THREE.Mesh(
+    new THREE.TorusGeometry(0.052, 0.022, 8, 16),
+    peripheralRgbMat,
+  );
+  mouseScrollWheel.rotation.y = Math.PI / 2;
+  mouseScrollWheel.position.set(0, 0.195, -0.2);
+  const mousePalmRgb = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.032, 0.07), peripheralRgbMat);
+  mousePalmRgb.position.set(0, 0.218, 0.25);
+  const mouseBaseRgb = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.026, 0.82), peripheralRgbMat);
+  mouseBaseRgb.position.set(0, 0.022, 0);
+  mouseGroup.add(mouseBody, mouseTopShell, mouseScrollWheel, mousePalmRgb, mouseBaseRgb);
+
+  // =========================================================================
   // KAMERA, ANIMASI DROP-IN, EXPLODED VIEW & RENDER LOOP
   // =========================================================================
   let cameraTransitionActive = false;
@@ -1780,6 +2055,18 @@ export function createWorkbench3DController(
   let explodedCurrent = visualOpts.explodedAmount;
   let glassSlideCurrent = visualOpts.glassPanelClosed ? 0 : 1;
   let powerLightBlend = initialState.fansSpinning && initialState.phase === 'case' ? 1 : 0;
+  let wasFullyBooted = Boolean(
+    initialState.phase === 'case' && initialState.fansSpinning && initialState.postResult?.passed,
+  );
+  let currentMonitorDisplay: MonitorDisplayState = resolveMonitorDisplayState({
+    phase: initialState.phase,
+    psuSwitchOn: initialState.psuSwitchOn,
+    fansSpinning: initialState.fansSpinning,
+    postRunning: currentTelemetry.postRunning,
+    postPassed: initialState.postResult ? initialState.postResult.passed : null,
+    faultLed: initialState.postResult?.faultLed ?? null,
+    osId: visualOpts.monitorOs,
+  });
   let rgbPulseClock = 0;
   let airflowClock = 0;
   let hoveredKey: string | null = null;
@@ -1805,7 +2092,13 @@ export function createWorkbench3DController(
         _targetLook.set(0, 0.25, 0);
       }
     } else {
-      if (preset === 'top') {
+      if (preset === 'setup') {
+        _targetPos.set(-1.35, 3.85, 13.35);
+        _targetLook.set(-2.2, 1.45, 0.35);
+      } else if (preset === 'monitor') {
+        _targetPos.set(-4.12, 2.55, 5.45);
+        _targetLook.set(-5.35, 2.15, -0.15);
+      } else if (preset === 'top') {
         _targetPos.set(0, 2.45, 9.9);
         _targetLook.set(0, 2.25, -0.1);
       } else if (preset === 'detail') {
@@ -1815,8 +2108,8 @@ export function createWorkbench3DController(
         _targetPos.set(-4.2, 3.1, 7.8);
         _targetLook.set(0, 2.25, -0.1);
       } else {
-        _targetPos.set(2.65, 3.25, 10.85);
-        _targetLook.set(0, 1.72, -0.1);
+        _targetPos.set(1.65, 3.35, 11.45);
+        _targetLook.set(-0.75, 1.85, -0.05);
       }
     }
   };
@@ -1961,6 +2254,48 @@ export function createWorkbench3DController(
     caseUnderglowMat.color.setHex(rgbHex);
     caseUnderglowMat.opacity = Number((rig.deskReflectionOpacity * 0.58).toFixed(3));
     caseUnderglowPlane.visible = rig.deskReflectionOpacity > 0.01;
+
+    // Sinkronisasi nyala penuh layar Monitor 27", lampu bias belakang, Keyboard RGB & Mouse RGB
+    const disp = currentMonitorDisplay;
+    const screenScale =
+      disp.mode === 'off'
+        ? 0
+        : disp.mode === 'standby' || disp.mode === 'error'
+          ? 1
+          : Math.max(0.45, powerLightBlend);
+    const pulseWave = 0.5 + 0.5 * Math.sin(rgbPulseClock);
+
+    monitorScreenMat.emissiveIntensity = disp.screenEmissiveIntensity * screenScale;
+
+    monitorLedMat.color.setHex(disp.statusLedHex);
+    monitorLedMat.emissive.setHex(disp.mode === 'off' ? 0x000000 : disp.statusLedHex);
+    monitorLedMat.emissiveIntensity = disp.mode === 'off' ? 0 : 1.45;
+
+    const periphColorHex = rgbOn ? rgbHex : disp.monitorGlowColorHex;
+    if (disp.isPeripheralsLit) {
+      peripheralRgbMat.color.setHex(periphColorHex);
+      peripheralRgbMat.emissive.setHex(periphColorHex);
+      peripheralRgbMat.emissiveIntensity = (1.75 + pulseWave * 0.35) * screenScale;
+
+      monitorRearRgbMat.color.setHex(disp.monitorGlowColorHex);
+      monitorRearRgbMat.emissive.setHex(disp.monitorGlowColorHex);
+      monitorRearRgbMat.emissiveIntensity = (1.65 + pulseWave * 0.3) * screenScale;
+    } else {
+      peripheralRgbMat.color.setHex(0x1e293b);
+      peripheralRgbMat.emissive.setHex(0x000000);
+      peripheralRgbMat.emissiveIntensity = 0;
+
+      monitorRearRgbMat.color.setHex(0x1e293b);
+      monitorRearRgbMat.emissive.setHex(0x000000);
+      monitorRearRgbMat.emissiveIntensity = 0;
+    }
+
+    monitorScreenLight.color.setHex(disp.monitorGlowColorHex);
+    monitorScreenLight.intensity = disp.monitorLightIntensity * screenScale;
+
+    monitorDeskGlowMat.color.setHex(disp.monitorGlowColorHex);
+    monitorDeskGlowMat.opacity = Number((disp.deskGlowOpacity * screenScale).toFixed(3));
+    monitorDeskGlowPlane.visible = monitorDeskGlowMat.opacity > 0.01;
   };
 
   const applyDynamicTransforms = (dt: number) => {
@@ -2124,6 +2459,58 @@ export function createWorkbench3DController(
     requestRender();
   });
 
+  const updateMonitorScreenSurface = () => {
+    currentMonitorDisplay = resolveMonitorDisplayState({
+      phase: currentState.phase,
+      psuSwitchOn: currentState.psuSwitchOn,
+      fansSpinning: currentState.fansSpinning,
+      postRunning: currentTelemetry.postRunning,
+      postPassed: currentState.postResult ? currentState.postResult.passed : null,
+      faultLed: currentState.postResult?.faultLed ?? null,
+      osId: visualOpts.monitorOs,
+    });
+
+    const cpuInfo = getEffectivePartInfo(currentState, 'cpu');
+    const gpuInfo = getEffectivePartInfo(currentState, 'gpu');
+    const ramLabel = getRamSummaryLabel(currentState);
+    const faultLed = currentState.postResult?.faultLed ?? null;
+
+    const sig = [
+      currentMonitorDisplay.mode,
+      visualOpts.monitorOs,
+      cpuInfo.model,
+      gpuInfo.model,
+      ramLabel,
+      currentTelemetry.biosSummary,
+      currentTelemetry.benchmarkScore,
+      currentTelemetry.cpuLoadTempC,
+      faultLed ?? 'none',
+    ].join('|');
+
+    if (sig !== currentMonitorSignature) {
+      currentMonitorSignature = sig;
+      const prevTex = activeMonitorTexture;
+      activeMonitorTexture = createMonitorScreenTexture(
+        {
+          mode: currentMonitorDisplay.mode,
+          osId: visualOpts.monitorOs,
+          cpuModel: cpuInfo.model,
+          gpuModel: gpuInfo.model,
+          ramLabel,
+          biosSummary: currentTelemetry.biosSummary,
+          benchmarkScore: currentTelemetry.benchmarkScore,
+          cpuTempC: currentTelemetry.cpuLoadTempC,
+          faultLed,
+        },
+        maxAniso,
+      );
+      monitorScreenMat.map = activeMonitorTexture;
+      monitorScreenMat.emissiveMap = activeMonitorTexture;
+      monitorScreenMat.needsUpdate = true;
+      prevTex.dispose();
+    }
+  };
+
   const applyVisualOptions = () => {
     // Tema warna casing
     const finish = CASE_FINISH_COLORS[visualOpts.caseFinish];
@@ -2132,11 +2519,15 @@ export function createWorkbench3DController(
     caseChassisMat.metalness = finish.metalness;
     caseShroudMat.color.setHex(finish.shroud);
 
+    updateMonitorScreenSurface();
     updateDynamicLighting();
   };
 
   // Sinkronisasi state React -> 3D Scene + model dinamis sesuai SKU
-  const syncSceneVisuals = (state: AssemblyState) => {
+  const syncSceneVisuals = (state: AssemblyState, telemetry?: MonitorTelemetrySnapshot) => {
+    if (telemetry) {
+      currentTelemetry = { ...telemetry };
+    }
     // Deteksi part yang baru saja dipasang untuk memicu animasi drop-in halus
     for (const partId of state.installedParts) {
       if (!prevInstalledSet.has(partId)) {
@@ -2157,6 +2548,17 @@ export function createWorkbench3DController(
       computeCameraPresetTargets(state.phase, 'isometric');
       cameraTransitionActive = true;
     }
+
+    // Saat PC baru saja selesai menyala & lulus POST, otomatis arahkan kamera ke sudut Setup agar Monitor + Periferal + PC terlihat menyala bersama
+    const isNowFullyBooted = Boolean(
+      state.phase === 'case' && state.fansSpinning && state.postResult?.passed,
+    );
+    if (isNowFullyBooted && !wasFullyBooted) {
+      activeCameraPreset = 'setup';
+      computeCameraPresetTargets('case', 'setup');
+      cameraTransitionActive = true;
+    }
+    wasFullyBooted = isNowFullyBooted;
 
     // 1. Update label CPU IHS jika SKU CPU berubah
     const cpuInfo = getEffectivePartInfo(state, 'cpu');
@@ -2446,6 +2848,12 @@ export function createWorkbench3DController(
       callbacksRef.current.onTogglePsuSwitch();
     } else if (action.type === 'power_button') {
       callbacksRef.current.onRunPost();
+    } else if (action.type === 'monitor_screen') {
+      activeCameraPreset = 'monitor';
+      computeCameraPresetTargets('case', 'monitor');
+      cameraTransitionActive = true;
+      callbacksRef.current.onMonitorScreenClick?.();
+      requestRender();
     } else {
       callbacksRef.current.onSlotInteract(action.slotId);
     }
@@ -2469,11 +2877,11 @@ export function createWorkbench3DController(
   if (!isSoftwareGl) {
     renderer.compile(scene, camera);
   }
-  syncSceneVisuals(initialState);
+  syncSceneVisuals(initialState, currentTelemetry);
 
   return {
-    syncState: (nextState: AssemblyState) => {
-      syncSceneVisuals(nextState);
+    syncState: (nextState: AssemblyState, telemetry?: MonitorTelemetrySnapshot) => {
+      syncSceneVisuals(nextState, telemetry);
     },
     setVisualOptions: (nextOptions: SceneVisualOptions) => {
       visualOpts = { ...nextOptions };
@@ -2535,6 +2943,7 @@ export function createWorkbench3DController(
       controls.dispose();
       envTex.dispose();
       disposeProceduralTexturePack(texPack);
+      activeMonitorTexture.dispose();
       dynamicTextures.forEach((t) => t.dispose());
       scene.traverse((obj) => {
         if (obj instanceof THREE.Mesh) {

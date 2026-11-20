@@ -5,6 +5,7 @@ import {
   ChevronDown,
   ChevronUp,
   Layers,
+  Monitor,
   Palette,
   Rotate3d,
   Shield,
@@ -15,6 +16,7 @@ import type { DragEvent } from 'react';
 import { useEffect, useRef, useState } from 'react';
 import { PARTS_BY_ID, type PartId, type SlotId } from '../config';
 import { hasPart, type AssemblyState } from '../lib/assemblyEngine';
+import { MONITOR_OS_PROFILES, type MonitorOsId } from '../lib/monitorDisplay';
 import {
   createWorkbench3DController,
   DEFAULT_SCENE_VISUAL_OPTIONS,
@@ -28,17 +30,31 @@ import {
 
 interface Workbench3DProps {
   state: AssemblyState;
+  monitorOs: MonitorOsId;
+  onChangeMonitorOs: (os: MonitorOsId) => void;
+  isPostRunning: boolean;
+  biosSummary: string;
+  benchmarkScore: number;
+  cpuLoadTempC: number;
+  focusSetupSignal?: number;
   onSlotInteract: (slotId: SlotId, droppedPartId?: PartId) => void;
   onToggleCpuLatch: () => void;
   onTogglePsuSwitch: () => void;
   onRunPost: () => void;
 }
 
-const CAMERA_PRESETS: { id: CameraPresetId; label: string }[] = [
+const BENCH_CAMERA_PRESETS: { id: CameraPresetId; label: string }[] = [
   { id: 'isometric', label: 'Isometrik' },
-  { id: 'top', label: 'Depan' },
+  { id: 'top', label: 'Atas' },
   { id: 'detail', label: 'Dekat' },
   { id: 'side', label: 'Samping' },
+];
+
+const CASE_CAMERA_PRESETS: { id: CameraPresetId; label: string }[] = [
+  { id: 'setup', label: 'Setup' },
+  { id: 'monitor', label: 'Monitor' },
+  { id: 'isometric', label: 'Casing' },
+  { id: 'detail', label: 'Dekat' },
 ];
 
 const CASE_FINISH_OPTIONS: { id: CaseFinishId; label: string; dotClass: string }[] = [
@@ -57,6 +73,13 @@ const RGB_THEME_OPTIONS: { id: RgbThemeId; label: string; dotClass: string }[] =
 
 export function Workbench3D({
   state,
+  monitorOs,
+  onChangeMonitorOs,
+  isPostRunning,
+  biosSummary,
+  benchmarkScore,
+  cpuLoadTempC,
+  focusSetupSignal = 0,
   onSlotInteract,
   onToggleCpuLatch,
   onTogglePsuSwitch,
@@ -69,9 +92,10 @@ export function Workbench3D({
   const [dockExpanded, setDockExpanded] = useState(true);
   const [showStyleTools, setShowStyleTools] = useState(false);
   const [dragHover, setDragHover] = useState(false);
-  const [visualOptions, setVisualOptions] = useState<SceneVisualOptions>(
-    DEFAULT_SCENE_VISUAL_OPTIONS,
-  );
+  const [visualOptions, setVisualOptions] = useState<SceneVisualOptions>({
+    ...DEFAULT_SCENE_VISUAL_OPTIONS,
+    monitorOs,
+  });
 
   const callbacksRef = useRef<Workbench3DCallbacks>({
     onSlotInteract,
@@ -79,6 +103,7 @@ export function Workbench3D({
     onTogglePsuSwitch,
     onRunPost,
     onHoverChange: setHoveredLabel,
+    onMonitorScreenClick: () => setActivePreset('monitor'),
   });
 
   useEffect(() => {
@@ -88,6 +113,7 @@ export function Workbench3D({
       onTogglePsuSwitch,
       onRunPost,
       onHoverChange: setHoveredLabel,
+      onMonitorScreenClick: () => setActivePreset('monitor'),
     };
   }, [onSlotInteract, onToggleCpuLatch, onTogglePsuSwitch, onRunPost]);
 
@@ -95,7 +121,10 @@ export function Workbench3D({
   useEffect(() => {
     const container = mountRef.current;
     if (!container) return;
-    const ctrl = createWorkbench3DController(container, state, callbacksRef, visualOptions);
+    const ctrl = createWorkbench3DController(container, state, callbacksRef, {
+      ...visualOptions,
+      monitorOs,
+    });
     controllerRef.current = ctrl;
     return () => {
       ctrl.dispose();
@@ -104,15 +133,34 @@ export function Workbench3D({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Sinkronkan perubahan komponen & status kerusakan ke adegan 3D
+  // Sinkronkan perubahan komponen, status POST, & telemetri BIOS ke adegan 3D + layar monitor
   useEffect(() => {
-    controllerRef.current?.syncState(state);
-  }, [state]);
+    controllerRef.current?.syncState(state, {
+      postRunning: isPostRunning,
+      biosSummary,
+      benchmarkScore,
+      cpuLoadTempC,
+    });
+    if (state.phase === 'case' && state.fansSpinning && state.postResult?.passed) {
+      setActivePreset((prev) => (prev === 'isometric' ? 'setup' : prev));
+    }
+  }, [state, isPostRunning, biosSummary, benchmarkScore, cpuLoadTempC]);
 
-  // Sinkronkan opsi kustomisasi 3D (kaca tempered, aliran udara, mode terurai, warna casing & RGB)
+  // Sinkronkan opsi kustomisasi 3D + pilihan OS Monitor (Windows / macOS)
   useEffect(() => {
-    controllerRef.current?.setVisualOptions(visualOptions);
-  }, [visualOptions]);
+    controllerRef.current?.setVisualOptions({
+      ...visualOptions,
+      monitorOs,
+    });
+  }, [visualOptions, monitorOs]);
+
+  // Saat pengguna klik "Lihat PC 3D Menyala", arahkan kamera ke sudut Setup penuh (Monitor + Periferal + PC)
+  useEffect(() => {
+    if (focusSetupSignal > 0 && state.phase === 'case') {
+      setActivePreset('setup');
+      controllerRef.current?.setCameraPreset('setup');
+    }
+  }, [focusSetupSignal, state.phase]);
 
   const handleCameraPreset = (preset: CameraPresetId) => {
     setActivePreset(preset);
@@ -140,6 +188,9 @@ export function Workbench3D({
   const coolerInstalled = hasPart(state, 'cpu_cooler');
   const moboInstalled = hasPart(state, 'motherboard');
   const gpuInstalled = hasPart(state, 'gpu');
+
+  const cameraPresets = state.phase === 'case' ? CASE_CAMERA_PRESETS : BENCH_CAMERA_PRESETS;
+  const activeOsProfile = MONITOR_OS_PROFILES[monitorOs];
 
   const quickSlots: { label: string; ariaLabel: string; onClick: () => void }[] =
     state.phase === 'bench'
@@ -229,7 +280,8 @@ export function Workbench3D({
             : []),
           ...(hasPart(state, 'cable_24pin') &&
           hasPart(state, 'cable_8pin_cpu') &&
-          hasPart(state, 'cable_8pin_gpu')
+          hasPart(state, 'cable_8pin_gpu') &&
+          !state.postResult?.passed
             ? [
                 {
                   label: 'Power POST',
@@ -244,6 +296,7 @@ export function Workbench3D({
     <div
       data-testid="workbench-3d-stage"
       data-powered-on={state.fansSpinning && state.phase === 'case' ? 'true' : 'false'}
+      data-monitor-os={monitorOs}
       onDragOver={handleDragOver}
       onDragLeave={() => setDragHover(false)}
       onDrop={handleDrop}
@@ -265,13 +318,13 @@ export function Workbench3D({
         <span>
           {hoveredLabel ??
             (state.fansSpinning && state.phase === 'case'
-              ? 'PC Menyala · Pencahayaan RGB & Pantulan Meja Aktif'
+              ? `Semua Menyala · ${activeOsProfile.shortLabel} + RGB Aktif`
               : 'Seret putar 3D · Gulir zoom · Klik slot')}
         </span>
       </div>
 
       {/* Dok Kontrol Bawah Terpadu yang dapat dilipat (zero viewport occlusion) */}
-      <div className="absolute bottom-2 left-1/2 -translate-x-1/2 w-[96%] max-w-[650px] flex flex-col items-center gap-1 pointer-events-none">
+      <div className="absolute bottom-2 left-1/2 -translate-x-1/2 w-[96%] max-w-[660px] flex flex-col items-center gap-1 pointer-events-none">
         <button
           type="button"
           onClick={() => setDockExpanded((prev) => !prev)}
@@ -293,14 +346,15 @@ export function Workbench3D({
 
         {dockExpanded && (
           <div className="pointer-events-auto w-full rounded-xl bg-slate-950/95 border border-slate-700 px-2.5 py-2 flex flex-col gap-2 shadow-[0_1px_2px_rgba(0,0,0,0.3),0_8px_20px_rgba(0,0,0,0.35)]">
-            {/* Baris 1: Kamera, Slot Cepat, dan Tombol Studio 3D */}
+            {/* Baris 1: Kamera, Pengalih OS Monitor (Windows / macOS), Slot Cepat, dan Studio 3D */}
             <div className="flex flex-wrap items-center justify-between gap-1.5">
               <div className="flex items-center gap-1" role="group" aria-label="Preset kamera 3D">
                 <Camera className="w-3.5 h-3.5 text-slate-400 mr-0.5 shrink-0" aria-hidden="true" />
-                {CAMERA_PRESETS.map((preset) => (
+                {cameraPresets.map((preset) => (
                   <button
                     key={preset.id}
                     type="button"
+                    data-testid={`camera-preset-${preset.id}`}
                     onClick={() => handleCameraPreset(preset.id)}
                     aria-pressed={activePreset === preset.id}
                     className={`min-h-7 px-2 py-1 rounded-lg text-[11px] font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400 ${
@@ -313,6 +367,42 @@ export function Workbench3D({
                   </button>
                 ))}
               </div>
+
+              {state.phase === 'case' && (
+                <div
+                  className="flex items-center gap-1 rounded-lg bg-slate-900 border border-slate-700 p-0.5"
+                  role="group"
+                  aria-label="Pilih Sistem Operasi Monitor"
+                >
+                  <Monitor className="w-3 h-3 text-slate-400 ml-1 mr-0.5 shrink-0" aria-hidden="true" />
+                  <button
+                    type="button"
+                    data-testid="os-switch-windows"
+                    aria-pressed={monitorOs === 'windows'}
+                    onClick={() => onChangeMonitorOs('windows')}
+                    className={`min-h-6 px-2 py-0.5 rounded-md text-[11px] font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400 ${
+                      monitorOs === 'windows'
+                        ? 'bg-blue-700 text-white'
+                        : 'text-slate-300 hover:text-white'
+                    }`}
+                  >
+                    Windows 11
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="os-switch-macos"
+                    aria-pressed={monitorOs === 'macos'}
+                    onClick={() => onChangeMonitorOs('macos')}
+                    className={`min-h-6 px-2 py-0.5 rounded-md text-[11px] font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-violet-400 ${
+                      monitorOs === 'macos'
+                        ? 'bg-violet-700 text-white'
+                        : 'text-slate-300 hover:text-white'
+                    }`}
+                  >
+                    macOS
+                  </button>
+                </div>
+              )}
 
               <div className="flex flex-wrap items-center gap-1">
                 {quickSlots.map((slot) => (

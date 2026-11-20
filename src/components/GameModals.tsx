@@ -9,6 +9,7 @@ import {
   Eye,
   Gauge,
   Lock,
+  Monitor,
   Play,
   RotateCcw,
   ShieldAlert,
@@ -45,6 +46,7 @@ import {
   formatWatts,
 } from '../lib/formatters';
 import { CLIENT_ORDERS, evaluateBuildLoadout } from '../lib/hardwareShop';
+import { type MonitorOsId } from '../lib/monitorDisplay';
 import { PartThumbnail } from './PartThumbnail';
 import { BimoAvatar } from './RobotBimo';
 
@@ -139,6 +141,8 @@ function AchievementIcon({ id, unlocked }: { id: AchievementId; unlocked: boolea
 interface VictoryModalProps {
   state: AssemblyState;
   biosSettings: BiosTuningSettings;
+  monitorOs: MonitorOsId;
+  onChangeMonitorOs: (os: MonitorOsId) => void;
   bestScore: number;
   onInspectPowered3D: () => void;
   onOpenBenchmarkLab: () => void;
@@ -149,6 +153,8 @@ interface VictoryModalProps {
 export function VictoryModal({
   state,
   biosSettings,
+  monitorOs,
+  onChangeMonitorOs,
   bestScore,
   onInspectPowered3D,
   onOpenBenchmarkLab,
@@ -344,6 +350,45 @@ export function VictoryModal({
           </div>
         </div>
 
+        {/* Pilihan Sistem Operasi Monitor 3D (Windows 11 / macOS) */}
+        <div className="rounded-xl bg-neutral-50 border border-neutral-200 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-xs text-neutral-700">
+            <Monitor className="w-4 h-4 text-blue-700 shrink-0" aria-hidden="true" />
+            <span className="font-semibold text-neutral-900">Tampilan Monitor 3D:</span>
+            <span className="text-neutral-600">Pilih sistem operasi yang menyala di layar</span>
+          </div>
+          <div
+            className="inline-flex rounded-lg border border-neutral-300 bg-white p-0.5"
+            role="group"
+            aria-label="Pilih OS Monitor 3D"
+          >
+            <button
+              type="button"
+              onClick={() => onChangeMonitorOs('windows')}
+              aria-pressed={monitorOs === 'windows'}
+              className={`min-h-8 px-3 py-1 rounded-md text-xs font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700 ${
+                monitorOs === 'windows'
+                  ? 'bg-blue-700 text-white'
+                  : 'text-neutral-700 hover:bg-neutral-100'
+              }`}
+            >
+              Windows 11
+            </button>
+            <button
+              type="button"
+              onClick={() => onChangeMonitorOs('macos')}
+              aria-pressed={monitorOs === 'macos'}
+              className={`min-h-8 px-3 py-1 rounded-md text-xs font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-violet-700 ${
+                monitorOs === 'macos'
+                  ? 'bg-violet-700 text-white'
+                  : 'text-neutral-700 hover:bg-neutral-100'
+              }`}
+            >
+              macOS
+            </button>
+          </div>
+        </div>
+
         {/* Tombol aksi utama */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
           <button
@@ -353,7 +398,7 @@ export function VictoryModal({
             className="min-h-11 px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-sm font-semibold transition-colors flex items-center justify-center gap-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900"
           >
             <Eye className="w-4 h-4" aria-hidden="true" />
-            <span>Lihat PC 3D Menyala</span>
+            <span>Lihat Setup 3D Menyala</span>
           </button>
           <button
             type="button"

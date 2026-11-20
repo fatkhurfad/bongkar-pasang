@@ -75,6 +75,7 @@ import {
   type WorkshopWallet,
 } from './lib/hardwareShop';
 import { buildPostLogSequence, type PostLogLine } from './lib/postSequence';
+import { type MonitorOsId } from './lib/monitorDisplay';
 import { formatRupiah, formatScore, formatWatts } from './lib/formatters';
 import {
   playSoundFx,
@@ -149,6 +150,8 @@ export default function App() {
   const [biosSettings, setBiosSettings] = useState<BiosTuningSettings>(DEFAULT_BIOS_SETTINGS);
   const [advancedBiosOpen, setAdvancedBiosOpen] = useState(false);
   const [showcase3dMode, setShowcase3dMode] = useState(false);
+  const [monitorOs, setMonitorOs] = useState<MonitorOsId>('windows');
+  const [focusSetupSignal, setFocusSetupSignal] = useState(0);
   const [infoPartId, setInfoPartId] = useState<PartId | null>(null);
   const [postRun, setPostRun] = useState<{
     lines: PostLogLine[];
@@ -633,10 +636,8 @@ export default function App() {
   const psuCapacity = getPsuCapacityWatts(state);
   const buildEval = evaluateBuildLoadout(state.purchasedModules, state.orderId);
   const activeOrder = CLIENT_ORDERS[state.orderId];
-  const activeBiosSummary =
-    postRun !== null
-      ? runBenchmarkSimulation(state.purchasedModules, state.orderId, biosSettings).biosSummaryLabel
-      : undefined;
+  const liveBiosReport = runBenchmarkSimulation(state.purchasedModules, state.orderId, biosSettings);
+  const activeBiosSummary = postRun !== null ? liveBiosReport.biosSummaryLabel : undefined;
 
   return (
     <div className="min-h-screen bg-neutral-50 text-neutral-900 flex flex-col">
@@ -806,6 +807,13 @@ export default function App() {
             state={state}
             viewMode={viewMode}
             lastAudioCue={lastAudioCue}
+            monitorOs={monitorOs}
+            onChangeMonitorOs={setMonitorOs}
+            isPostRunning={postRun !== null}
+            biosSummary={liveBiosReport.biosSummaryLabel}
+            benchmarkScore={liveBiosReport.overallScore}
+            cpuLoadTempC={liveBiosReport.cpuLoadTempC}
+            focusSetupSignal={focusSetupSignal}
             onToggleViewMode={setViewMode}
             onSlotInteract={handleSlotInteract}
             onToggleCpuLatch={handleToggleCpuLatch}
@@ -880,8 +888,14 @@ export default function App() {
         <VictoryModal
           state={state}
           biosSettings={biosSettings}
+          monitorOs={monitorOs}
+          onChangeMonitorOs={setMonitorOs}
           bestScore={bestScore}
-          onInspectPowered3D={() => setShowcase3dMode(true)}
+          onInspectPowered3D={() => {
+            setViewMode('3d');
+            setShowcase3dMode(true);
+            setFocusSetupSignal((n) => n + 1);
+          }}
           onOpenBenchmarkLab={() => setBenchmarkOpen(true)}
           onRestartWithShop={() => startWorkshopSession({ openShopFirst: true })}
           onBackToTitle={handleBackToTitle}
