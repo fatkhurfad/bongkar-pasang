@@ -295,6 +295,19 @@ class PcSoundManager {
         this.playOsc(880, 880, 0.14, 'sine', 0.11, 0.075);
         break;
 
+      case 'shop_buy':
+        // Bunyi transaksi pembelian modul & paket hardware masuk ke meja kerja
+        this.playOsc(659.25, 659.25, 0.075, 'triangle', 0.1, 0);
+        this.playOsc(987.77, 987.77, 0.12, 'sine', 0.11, 0.06);
+        this.playFilteredNoise('bandpass', 2800, 3800, 2.4, 0.035, 0.07, 0.02);
+        break;
+
+      case 'shop_sell':
+        // Bunyi pengembalian dana (refund) modul yang belum dipasang
+        this.playOsc(783.99, 587.33, 0.09, 'triangle', 0.09, 0);
+        this.playOsc(523.25, 440, 0.1, 'sine', 0.08, 0.06);
+        break;
+
       case 'post_tick':
         // Detik halus log pemeriksaan BIOS POST
         this.playOsc(this.jitter(1420, 0.03), 1240, 0.022, 'square', 0.025, 0, 0.002);

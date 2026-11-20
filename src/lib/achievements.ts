@@ -28,6 +28,8 @@ export interface AchievementEvalInput {
   hintsUsed: number;
   buildPreset: BuildPresetId;
   totalWattage: number;
+  psuCapacityWatts?: number;
+  isGoldOrBetterPsu?: boolean;
   hasDualChannelRam: boolean;
   hasThermalPaste: boolean;
 }
@@ -50,8 +52,8 @@ export const ACHIEVEMENT_DEFS: AchievementDef[] = [
     title: 'Kombinasi Paling Efisien',
     category: 'efisiensi',
     bonusScore: 200,
-    conditionLabel: 'Beban daya 50%–65% PSU 80+ Gold, RAM Dual-Channel, & pasta termal.',
-    earnedNote: 'Rasio daya tepat di zona efisiensi puncak PSU 80+ Gold (58%) & RAM Dual-Channel.',
+    conditionLabel: 'Beban daya 50%–65% PSU 80+ Gold/Platinum, RAM Dual-Channel, & pasta termal.',
+    earnedNote: 'Rasio daya tepat di zona efisiensi puncak PSU (50%–65%) & RAM Dual-Channel.',
   },
   {
     id: 'teknisi_tanpa_cela',
@@ -83,8 +85,12 @@ export const ACHIEVEMENTS_BY_ID: Record<AchievementId, AchievementDef> = Object.
   ACHIEVEMENT_DEFS.map((item) => [item.id, item]),
 ) as Record<AchievementId, AchievementDef>;
 
-export function getPsuLoadPercent(totalWattage: number): number {
-  return Math.round((totalWattage / PSU_CAPACITY_WATTS) * 100);
+export function getPsuLoadPercent(
+  totalWattage: number,
+  psuCapacityWatts: number = PSU_CAPACITY_WATTS,
+): number {
+  if (psuCapacityWatts <= 0) return 0;
+  return Math.round((totalWattage / psuCapacityWatts) * 100);
 }
 
 export function isEfficientComponentCombination(
@@ -92,11 +98,15 @@ export function isEfficientComponentCombination(
   totalWattage: number,
   hasDualChannelRam: boolean,
   hasThermalPaste: boolean,
+  psuCapacityWatts: number = PSU_CAPACITY_WATTS,
+  isGoldOrBetterPsu?: boolean,
 ): boolean {
-  const loadPct = getPsuLoadPercent(totalWattage);
+  const loadPct = getPsuLoadPercent(totalWattage, psuCapacityWatts);
   const preset = BUILD_PRESETS[buildPreset];
+  const efficiencyEligible =
+    typeof isGoldOrBetterPsu === 'boolean' ? isGoldOrBetterPsu : preset.isPeakEfficient;
   return (
-    preset.isPeakEfficient &&
+    efficiencyEligible &&
     loadPct >= 50 &&
     loadPct <= 65 &&
     hasDualChannelRam &&
@@ -117,6 +127,8 @@ export function evaluateRunAchievements(input: AchievementEvalInput): Achievemen
       input.totalWattage,
       input.hasDualChannelRam,
       input.hasThermalPaste,
+      input.psuCapacityWatts ?? PSU_CAPACITY_WATTS,
+      input.isGoldOrBetterPsu,
     )
   ) {
     earned.push('kombinasi_efisien');

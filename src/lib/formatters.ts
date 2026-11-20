@@ -24,3 +24,11 @@ export function formatAngle(degrees: number): string {
   const normalized = ((degrees % 360) + 360) % 360;
   return `${normalized}°`;
 }
+
+export function formatRupiah(amount: number): string {
+  if (!Number.isFinite(amount)) return 'Rp0';
+  const rounded = Math.round(amount);
+  const absFormatted = Math.abs(rounded).toLocaleString('id-ID');
+  return rounded < 0 ? `-Rp${absFormatted}` : `Rp${absFormatted}`;
+}
+

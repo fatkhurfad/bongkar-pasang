@@ -1,52 +1,63 @@
-/* Layar judul utama RakitPC Lab dengan pilihan mode simulasi, paket efisiensi komponen, dan pratinjau BIMO */
+/* Layar judul utama RakitPC Lab dengan pilihan pesanan klien / rakit bebas, mode simulasi, dan akses langsung ke Toko Modul */
 
-import { AlertTriangle, Award, Play } from 'lucide-react';
+import { AlertTriangle, Award, Play, ShoppingBag, Wallet } from 'lucide-react';
 import {
-  BUILD_PRESET_LIST,
-  BUILD_PRESETS,
   MODE_DESCRIPTIONS,
-  type BuildPresetId,
   type GameMode,
 } from '../config';
 import { ACHIEVEMENT_DEFS, type AchievementId } from '../lib/achievements';
-import { formatScore } from '../lib/formatters';
+import { formatRupiah, formatScore } from '../lib/formatters';
+import {
+  CATALOG_BY_SKU,
+  CLIENT_ORDERS,
+  CLIENT_ORDER_LIST,
+  type ClientOrderId,
+  type WorkshopWallet,
+} from '../lib/hardwareShop';
 import { BimoAvatar } from './RobotBimo';
 
 interface TitleScreenProps {
   selectedMode: GameMode;
-  selectedPreset: BuildPresetId;
+  selectedOrderId: ClientOrderId;
   randomFaultEnabled: boolean;
   bestScore: number;
   unlockedAchievements: AchievementId[];
+  workshopWallet: WorkshopWallet;
   onSelectMode: (mode: GameMode) => void;
-  onSelectPreset: (preset: BuildPresetId) => void;
+  onSelectOrder: (orderId: ClientOrderId) => void;
   onToggleRandomFault: (enabled: boolean) => void;
-  onStart: () => void;
+  onStartWithShop: () => void;
+  onStartQuickBuild: () => void;
 }
 
 export function TitleScreen({
   selectedMode,
-  selectedPreset,
+  selectedOrderId,
   randomFaultEnabled,
   bestScore,
   unlockedAchievements,
+  workshopWallet,
   onSelectMode,
-  onSelectPreset,
+  onSelectOrder,
   onToggleRandomFault,
-  onStart,
+  onStartWithShop,
+  onStartQuickBuild,
 }: TitleScreenProps) {
-  const activePreset = BUILD_PRESETS[selectedPreset];
+  const activeOrder = CLIENT_ORDERS[selectedOrderId];
+  const recCpu = CATALOG_BY_SKU[activeOrder.recommendedLoadout.cpu];
+  const recGpu = CATALOG_BY_SKU[activeOrder.recommendedLoadout.gpu];
+  const recSsd = CATALOG_BY_SKU[activeOrder.recommendedLoadout.ssd_nvme];
 
   return (
     <main className="min-h-screen bg-neutral-50 text-neutral-900 flex flex-col justify-between px-4 sm:px-8 py-6 sm:py-8">
       <div className="w-full max-w-6xl mx-auto my-auto grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-10 items-center">
-        {/* Zona Kiri: Emblem Judul SVG, Pilihan Mode, Paket Komponen, dan Aksi Mulai */}
-        <div className="lg:col-span-5 flex flex-col gap-5">
+        {/* Zona Kiri: Emblem Judul SVG, Pilihan Proyek/Pesanan Klien, Mode, dan Aksi Mulai */}
+        <div className="lg:col-span-5 flex flex-col gap-4">
           {/* Custom inline SVG Title Lockup */}
-          <div className="flex flex-col gap-2.5">
+          <div className="flex flex-col gap-2">
             <svg
               viewBox="0 0 320 68"
-              className="w-full max-w-[280px] h-auto"
+              className="w-full max-w-[265px] h-auto"
               role="img"
               aria-label="RakitPC Lab"
             >
@@ -79,23 +90,65 @@ export function TitleScreen({
                 fill="#475569"
                 fontFamily="'IBM Plex Mono', monospace"
               >
-                SIMULASI PERAKITAN HARDWARE
+                SIMULATOR BENGKEL &amp; RAKIT PC 3D
               </text>
             </svg>
 
             <h1 className="text-2xl sm:text-3xl font-semibold text-neutral-900 leading-tight text-balance">
-              Rakit komputer dari soket CPU hingga uji nyala BIOS.
+              Pilih modul, atur anggaran, dan rakit PC secara realistis.
             </h1>
-            <p className="text-sm sm:text-base text-neutral-600 leading-relaxed">
-              Belajar urutan perakitan realistis, efisiensi daya komponen, dan diagnosis POST
-              bersama robot pendamping BIMO.
+            <p className="text-sm text-neutral-600 leading-relaxed">
+              Belanja komponen sesuai kebutuhan klien atau rakit bebas di meja 3D tanpa tekanan
+              waktu bersama robot pendamping BIMO.
             </p>
           </div>
 
-          {/* Pilihan Mode Permainan */}
-          <div className="flex flex-col gap-1.5" role="radiogroup" aria-label="Pilih mode simulasi">
-            <span className="text-xs font-semibold text-neutral-900">Mode Simulasi</span>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          {/* Pilihan Pesanan Klien atau Rakit Bebas */}
+          <div
+            className="flex flex-col gap-1.5"
+            role="radiogroup"
+            aria-label="Pilih pesanan klien atau rakit bebas"
+          >
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="text-xs font-semibold text-neutral-900">Proyek Bengkel &amp; Anggaran</span>
+              <span className="text-[11px] text-neutral-500 font-mono tabular-nums">
+                {activeOrder.isSandbox
+                  ? `Dana ${formatRupiah(activeOrder.budget)}`
+                  : `Jasa +${formatRupiah(activeOrder.serviceFee)}`}
+              </span>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {CLIENT_ORDER_LIST.map((order) => {
+                const active = selectedOrderId === order.id;
+                return (
+                  <button
+                    key={order.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    onClick={() => onSelectOrder(order.id)}
+                    className={`min-h-14 text-left px-3 py-2 rounded-xl border transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700 ${
+                      active
+                        ? 'bg-blue-50 border-blue-700 ring-1 ring-blue-700'
+                        : 'bg-white border-neutral-200 hover:border-neutral-400'
+                    }`}
+                  >
+                    <p className="text-xs font-semibold text-neutral-900 truncate">{order.title}</p>
+                    <p className="text-[11px] font-mono text-neutral-600 tabular-nums mt-0.5 truncate">
+                      {formatRupiah(order.budget)}
+                      {order.isSandbox ? ' · Bebas' : ` · +${formatRupiah(order.serviceFee)}`}
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-xs text-neutral-600 leading-snug">{activeOrder.brief}</p>
+          </div>
+
+          {/* Pilihan Mode Bantuan */}
+          <div className="flex flex-col gap-1.5" role="radiogroup" aria-label="Pilih mode panduan">
+            <span className="text-xs font-semibold text-neutral-900">Mode Panduan</span>
+            <div className="grid grid-cols-2 gap-2">
               {(['belajar', 'mandiri'] as GameMode[]).map((mode) => {
                 const active = selectedMode === mode;
                 const info = MODE_DESCRIPTIONS[mode];
@@ -106,63 +159,22 @@ export function TitleScreen({
                     role="radio"
                     aria-checked={active}
                     onClick={() => onSelectMode(mode)}
-                    className={`min-h-14 text-left p-3 rounded-xl border transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700 ${
+                    className={`min-h-12 text-left p-2.5 rounded-xl border transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700 ${
                       active
                         ? 'bg-blue-50 border-blue-700 ring-1 ring-blue-700'
                         : 'bg-white border-neutral-200 hover:border-neutral-400'
                     }`}
                   >
-                    <p className="text-sm font-semibold text-neutral-900">{info.label}</p>
-                    <p className="text-xs text-neutral-600 mt-0.5 leading-snug">{info.shortNote}</p>
+                    <p className="text-xs font-semibold text-neutral-900">{info.label}</p>
+                    <p className="text-[11px] text-neutral-600 mt-0.5 leading-snug">{info.shortNote}</p>
                   </button>
                 );
               })}
             </div>
-          </div>
-
-          {/* Pilihan Kombinasi Paket Komponen (mempengaruhi efisiensi daya & lencana pencapaian) */}
-          <div
-            className="flex flex-col gap-1.5"
-            role="radiogroup"
-            aria-label="Pilih paket kombinasi komponen"
-          >
-            <div className="flex items-baseline justify-between gap-2">
-              <span className="text-xs font-semibold text-neutral-900">Kombinasi Komponen (PSU 650 W)</span>
-              <span className="text-[11px] text-neutral-500 font-mono tabular-nums">
-                {activePreset.cpuModel} + {activePreset.gpuShortLabel}
-              </span>
-            </div>
-            <div className="grid grid-cols-3 gap-2">
-              {BUILD_PRESET_LIST.map((preset) => {
-                const active = selectedPreset === preset.id;
-                return (
-                  <button
-                    key={preset.id}
-                    type="button"
-                    role="radio"
-                    aria-checked={active}
-                    onClick={() => onSelectPreset(preset.id)}
-                    className={`min-h-12 text-left px-2.5 py-2 rounded-xl border transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700 ${
-                      active
-                        ? 'bg-blue-50 border-blue-700 ring-1 ring-blue-700'
-                        : 'bg-white border-neutral-200 hover:border-neutral-400'
-                    }`}
-                  >
-                    <p className="text-xs font-semibold text-neutral-900 truncate">
-                      {preset.shortLabel}
-                    </p>
-                    <p className="text-[11px] text-neutral-600 truncate mt-0.5">
-                      {preset.cpuShortCode} · {preset.gpuShortLabel.split(' ').slice(0, 2).join(' ')}
-                    </p>
-                  </button>
-                );
-              })}
-            </div>
-            <p className="text-xs text-neutral-600 leading-snug">{activePreset.description}</p>
           </div>
 
           {/* Pengaturan Skenario Kerusakan Komponen Acak (ESD / DOA) */}
-          <label className="rounded-xl border border-neutral-200 bg-white px-3 py-2.5 flex items-center justify-between gap-3 cursor-pointer hover:border-neutral-300">
+          <label className="rounded-xl border border-neutral-200 bg-white px-3 py-2 flex items-center justify-between gap-3 cursor-pointer hover:border-neutral-300">
             <div className="flex items-start gap-2.5 min-w-0">
               <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" aria-hidden="true" />
               <div className="min-w-0">
@@ -170,7 +182,7 @@ export function TitleScreen({
                   Skenario Kerusakan Komponen Acak (ESD / DOA)
                 </span>
                 <span className="text-[11px] text-neutral-600 block">
-                  Simulasi cacat acak &amp; status Part Rusak saat salah urutan perakitan.
+                  Simulasi cacat pabrik acak &amp; status Part Rusak saat salah urutan.
                 </span>
               </div>
             </div>
@@ -182,32 +194,54 @@ export function TitleScreen({
             />
           </label>
 
-          {/* Tombol Aksi Utama + Ringkasan Rekor & Lencana */}
-          <div className="flex flex-wrap items-center gap-4 pt-1">
+          {/* Tombol Aksi Utama: Buka Toko & Rakit + Pintasan Paket Siap */}
+          <div className="flex flex-wrap items-center gap-2.5 pt-1">
             <button
               type="button"
               data-start="true"
-              onClick={onStart}
-              className="min-h-12 px-7 py-3 rounded-xl bg-blue-700 hover:bg-blue-800 text-white text-base font-semibold transition-colors flex items-center justify-center gap-2.5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700"
+              onClick={onStartWithShop}
+              className="min-h-12 px-6 py-3 rounded-xl bg-blue-700 hover:bg-blue-800 text-white text-sm sm:text-base font-semibold transition-colors flex items-center justify-center gap-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700"
             >
-              <Play className="w-5 h-5 fill-current" aria-hidden="true" />
-              <span>Mulai Merakit</span>
+              <ShoppingBag className="w-4 h-4 shrink-0" aria-hidden="true" />
+              <span>Buka Toko &amp; Rakit</span>
             </button>
 
-            <div className="flex items-center gap-3 text-xs text-neutral-600 tabular-nums">
-              {bestScore > 0 && (
-                <span>
-                  Terbaik: <strong className="text-neutral-900">{formatScore(bestScore)}</strong>
-                </span>
-              )}
+            <button
+              type="button"
+              onClick={onStartQuickBuild}
+              className="min-h-12 px-4 py-3 rounded-xl border border-neutral-300 bg-white hover:bg-neutral-50 text-neutral-900 text-sm font-semibold transition-colors flex items-center justify-center gap-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700"
+            >
+              <Play className="w-4 h-4 shrink-0" aria-hidden="true" />
+              <span>Langsung Rakit</span>
+            </button>
+          </div>
+
+          {/* Ringkasan Dompet Bengkel, Rekor, & Lencana */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-neutral-600 tabular-nums">
+            {workshopWallet.completedOrders > 0 && (
               <span className="inline-flex items-center gap-1">
-                <Award className="w-4 h-4 text-amber-600 shrink-0" aria-hidden="true" />
+                <Wallet className="w-3.5 h-3.5 text-emerald-700 shrink-0" aria-hidden="true" />
                 <span>
-                  <strong className="text-neutral-900">{unlockedAchievements.length}</strong>/
-                  {ACHIEVEMENT_DEFS.length} Lencana
+                  Kas Bengkel:{' '}
+                  <strong className="text-neutral-900">
+                    {formatRupiah(workshopWallet.totalEarnings)}
+                  </strong>{' '}
+                  ({workshopWallet.completedOrders} PC)
                 </span>
               </span>
-            </div>
+            )}
+            {bestScore > 0 && (
+              <span>
+                Skor Terbaik: <strong className="text-neutral-900">{formatScore(bestScore)}</strong>
+              </span>
+            )}
+            <span className="inline-flex items-center gap-1">
+              <Award className="w-3.5 h-3.5 text-amber-600 shrink-0" aria-hidden="true" />
+              <span>
+                <strong className="text-neutral-900">{unlockedAchievements.length}</strong>/
+                {ACHIEVEMENT_DEFS.length} Lencana
+              </span>
+            </span>
           </div>
         </div>
 
@@ -243,7 +277,7 @@ export function TitleScreen({
                   LGA1700
                 </text>
                 <text x="221" y="160" textAnchor="middle" fontSize="8" fill="#334155" fontFamily="monospace">
-                  {activePreset.cpuShortCode}
+                  {recCpu?.shortCode ?? 'i5-14K'}
                 </text>
 
                 {[396, 424, 452, 480].map((rx, idx) => (
@@ -262,7 +296,7 @@ export function TitleScreen({
 
                 <rect x="166" y="226" width="194" height="32" rx="4" fill="#0f172a" stroke="#38bdf8" strokeWidth="1.5" />
                 <text x="263" y="246" textAnchor="middle" fontSize="10" fontWeight="600" fill="#e2e8f0" fontFamily="monospace">
-                  GEN4 NVMe 1 TB · M.2 2280
+                  {(recSsd?.model ?? 'GEN4 NVMe 1 TB').toUpperCase()} · M.2
                 </text>
 
                 <rect x="140" y="276" width="286" height="68" rx="6" fill="#0f172a" stroke="#94a3b8" strokeWidth="2" />
@@ -277,7 +311,7 @@ export function TitleScreen({
                   <line x1="312" y1="294" x2="312" y2="326" stroke="#94a3b8" strokeWidth="3" />
                 </g>
                 <text x="382" y="314" textAnchor="middle" fontSize="8.5" fontWeight="700" fill="#f8fafc" fontFamily="monospace">
-                  {activePreset.gpuShortLabel.split(' ').slice(0, 2).join(' ')}
+                  {recGpu?.shortCode ?? 'RTX 4070'}
                 </text>
 
                 <rect x="454" y="268" width="94" height="72" rx="6" fill="#334155" stroke="#64748b" strokeWidth="1.5" />
@@ -291,10 +325,10 @@ export function TitleScreen({
             <div className="flex items-center gap-4 pt-1">
               <BimoAvatar mood="happy" size="sm" />
               <div className="min-w-0">
-                <p className="text-sm font-semibold text-neutral-900">BIMO Siap Memandu</p>
+                <p className="text-sm font-semibold text-neutral-900">BIMO Siap Mendampingi</p>
                 <p className="text-xs sm:text-sm text-neutral-600 leading-relaxed mt-0.5">
-                  &ldquo;Pilih kombinasi komponen paling efisien dan selesaikan perakitan di bawah
-                  90 detik tanpa salah untuk meraih semua lencana pencapaian!&rdquo;
+                  &ldquo;Tidak perlu buru-buru! Kita mulai dengan belanja CPU, pendingin, RAM, SSD,
+                  PSU, dan GPU sesuai kebutuhan di Toko Modul, lalu rakit santai di meja 3D.&rdquo;
                 </p>
               </div>
             </div>
@@ -304,7 +338,7 @@ export function TitleScreen({
 
       {/* Petunjuk kontrol ringkas di margin aman bawah */}
       <footer className="w-full max-w-6xl mx-auto pt-4 text-center text-xs text-neutral-500">
-        Klik atau Seret Komponen · R Putar CPU · H Petunjuk BIMO · P Jeda · M Suara
+        Belanja Modul di Toko · Klik atau Seret Komponen · R Putar CPU · H Petunjuk BIMO · P Jeda
       </footer>
     </main>
   );

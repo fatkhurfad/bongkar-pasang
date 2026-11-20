@@ -18,6 +18,8 @@ import { PARTS_BY_ID, type PartId, type SlotId } from '../config';
 import {
   getActiveHintTarget,
   getDamagedPartList,
+  getEffectivePartInfo,
+  getPsuCapacityWatts,
   hasPart,
   type AssemblyState,
   type PostLedKey,
@@ -54,6 +56,11 @@ export function WorkbenchStage({
   const [dragOverSlot, setDragOverSlot] = useState<SlotId | null>(null);
   const hint = getActiveHintTarget(state);
   const damagedList = getDamagedPartList(state);
+  const cpuInfo = getEffectivePartInfo(state, 'cpu');
+  const gpuInfo = getEffectivePartInfo(state, 'gpu');
+  const ssdInfo = getEffectivePartInfo(state, 'ssd_nvme');
+  const psuInfo = getEffectivePartInfo(state, 'psu');
+  const psuCapacity = getPsuCapacityWatts(state);
 
   const handleDragOver = (event: DragEvent<HTMLButtonElement>, slotId: SlotId) => {
     event.preventDefault();
@@ -395,10 +402,10 @@ export function WorkbenchStage({
                   <rect x="208" y="118" width="92" height="92" rx="4" fill="#14532d" stroke="#0f172a" strokeWidth="1.5" />
                   <rect x="218" y="128" width="72" height="72" rx="3" fill="#cbd5e1" stroke="#64748b" strokeWidth="1.5" />
                   <text x="254" y="162" textAnchor="middle" fontSize="10" fontWeight="700" fill="#1e293b" fontFamily="monospace">
-                    CORE i5
+                    {cpuInfo.shortCode}
                   </text>
                   <text x="254" y="175" textAnchor="middle" fontSize="8" fill="#475569" fontFamily="monospace">
-                    14600K
+                    LGA1700
                   </text>
                   <polygon points="210,208 222,208 210,196" fill="#f59e0b" />
                 </g>
@@ -553,7 +560,7 @@ export function WorkbenchStage({
                     <rect x="194" y="291" width="38" height="20" rx="1.5" fill="#334155" />
                     <rect x="242" y="291" width="66" height="20" rx="1.5" fill="#1d4ed8" />
                     <text x="275" y="304" textAnchor="middle" fontSize="8" fontWeight="700" fill="#ffffff" fontFamily="monospace">
-                      NVMe 1 TB
+                      {ssdInfo.shortCode}
                     </text>
                     <circle cx="370" cy="301" r="4" fill="#e2e8f0" stroke="#0f172a" strokeWidth="1" />
                   </g>
@@ -701,14 +708,14 @@ export function WorkbenchStage({
               />
               {!psuInstalled ? (
                 <text x="185" y="396" textAnchor="middle" fontSize="10" fill="#94a3b8" fontFamily="monospace">
-                  SLOT PSU ATX (650 W)
+                  SLOT PSU ATX ({psuCapacity} W)
                 </text>
               ) : (
                 <g>
                   <rect x="86" y="362" width="198" height="60" rx="4" fill="#0f172a" stroke="#64748b" strokeWidth="1.5" />
                   <rect x="102" y="374" width="68" height="24" rx="3" fill="#f59e0b" />
                   <text x="136" y="390" textAnchor="middle" fontSize="10" fontWeight="700" fill="#0f172a" fontFamily="monospace">
-                    650W GOLD
+                    {psuInfo.shortCode}
                   </text>
                   <text x="102" y="412" fontSize="8" fill="#94a3b8" fontFamily="monospace">
                     PSU TERPASANG
@@ -857,7 +864,7 @@ export function WorkbenchStage({
                 <g>
                   <rect x="122" y="226" width="248" height="62" rx="6" fill="#1e293b" stroke="#94a3b8" strokeWidth="2" />
                   <text x="154" y="242" fontSize="8" fontWeight="700" fill="#e2e8f0" fontFamily="monospace">
-                    RTX 4070 12GB
+                    {gpuInfo.model}
                   </text>
                   {/* Dua kipas GPU berputar saat POST sukses */}
                   {[186, 266].map((gx) => (

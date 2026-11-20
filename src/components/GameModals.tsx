@@ -1,6 +1,7 @@
-/* Modal jeda, ringkasan keberhasilan uji POST BIOS beserta lencana pencapaian, dan kartu edukasi detail komponen */
+/* Modal jeda, ringkasan keberhasilan uji POST BIOS beserta laporan proyek klien & lencana pencapaian, dan kartu edukasi detail komponen */
 
 import {
+  AlertTriangle,
   Award,
   CheckCircle2,
   Cpu,
@@ -10,11 +11,13 @@ import {
   RotateCcw,
   ShieldAlert,
   ShieldCheck,
+  ShoppingBag,
   Timer,
+  Wallet,
   X,
   Zap,
 } from 'lucide-react';
-import { BUILD_PRESETS, PARTS_BY_ID, PSU_CAPACITY_WATTS, type PartId } from '../config';
+import { PARTS_BY_ID, type PartId } from '../config';
 import {
   ACHIEVEMENT_DEFS,
   getPsuLoadPercent,
@@ -22,20 +25,36 @@ import {
 } from '../lib/achievements';
 import {
   getAccuracyPercent,
+  getEffectiveIdleTempC,
+  getEffectivePartInfo,
+  getPsuCapacityWatts,
   getTotalWattage,
   type AssemblyState,
 } from '../lib/assemblyEngine';
-import { formatDuration, formatPercent, formatScore, formatWatts } from '../lib/formatters';
+import {
+  formatDuration,
+  formatPercent,
+  formatRupiah,
+  formatScore,
+  formatWatts,
+} from '../lib/formatters';
+import { CLIENT_ORDERS, evaluateBuildLoadout } from '../lib/hardwareShop';
 import { PartThumbnail } from './PartThumbnail';
 import { BimoAvatar } from './RobotBimo';
 
 interface PauseModalProps {
   onResume: () => void;
+  onOpenShop: () => void;
   onRestart: () => void;
   onBackToTitle: () => void;
 }
 
-export function PauseModal({ onResume, onRestart, onBackToTitle }: PauseModalProps) {
+export function PauseModal({
+  onResume,
+  onOpenShop,
+  onRestart,
+  onBackToTitle,
+}: PauseModalProps) {
   return (
     <div
       role="dialog"
@@ -49,7 +68,7 @@ export function PauseModal({ onResume, onRestart, onBackToTitle }: PauseModalPro
             Simulasi Dijeda
           </h2>
           <p className="text-sm text-neutral-600 mt-1">
-            Progres perakitanmu tersimpan sementara. Lanjutkan kapan saja.
+            Progres rakitan dan belanja modulmu tersimpan sementara. Lanjutkan kapan saja.
           </p>
         </div>
 
@@ -65,11 +84,20 @@ export function PauseModal({ onResume, onRestart, onBackToTitle }: PauseModalPro
 
           <button
             type="button"
+            onClick={onOpenShop}
+            className="min-h-11 px-4 py-2.5 rounded-xl border border-neutral-300 bg-white hover:bg-neutral-50 text-neutral-900 text-sm font-semibold transition-colors flex items-center justify-center gap-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700"
+          >
+            <ShoppingBag className="w-4 h-4" aria-hidden="true" />
+            <span>Buka Toko Modul</span>
+          </button>
+
+          <button
+            type="button"
             onClick={onRestart}
             className="min-h-11 px-4 py-2.5 rounded-xl border border-neutral-300 bg-white hover:bg-neutral-50 text-neutral-900 text-sm font-semibold transition-colors flex items-center justify-center gap-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700"
           >
             <RotateCcw className="w-4 h-4" aria-hidden="true" />
-            <span>Ulangi dari Awal</span>
+            <span>Ulangi Proyek Ini</span>
           </button>
 
           <button
@@ -105,21 +133,29 @@ function AchievementIcon({ id, unlocked }: { id: AchievementId; unlocked: boolea
 interface VictoryModalProps {
   state: AssemblyState;
   bestScore: number;
-  onRestart: () => void;
+  onRestartWithShop: () => void;
   onBackToTitle: () => void;
 }
 
 export function VictoryModal({
   state,
   bestScore,
-  onRestart,
+  onRestartWithShop,
   onBackToTitle,
 }: VictoryModalProps) {
   const accuracy = getAccuracyPercent(state);
   const totalWatts = getTotalWattage(state);
-  const loadPercent = getPsuLoadPercent(totalWatts);
-  const preset = BUILD_PRESETS[state.buildPreset];
+  const psuCapacity = getPsuCapacityWatts(state);
+  const loadPercent = getPsuLoadPercent(totalWatts, psuCapacity);
+  const order = CLIENT_ORDERS[state.orderId];
+  const buildEval = evaluateBuildLoadout(state.purchasedModules, state.orderId);
+  const cpuInfo = getEffectivePartInfo(state, 'cpu');
+  const gpuInfo = getEffectivePartInfo(state, 'gpu');
+  const ssdInfo = getEffectivePartInfo(state, 'ssd_nvme');
+  const psuInfo = getEffectivePartInfo(state, 'psu');
+  const coolerInfo = getEffectivePartInfo(state, 'cpu_cooler');
   const earnedSet = new Set(state.earnedAchievements);
+  const earnedFee = !order.isSandbox && buildEval.allOrderRequirementsMet ? order.serviceFee : 0;
 
   return (
     <div
@@ -140,47 +176,86 @@ export function VictoryModal({
             <h2 id="victory-modal-title" className="text-2xl font-semibold text-neutral-900 mt-0.5">
               Komputer Berhasil Dirakit!
             </h2>
+            <p className="text-xs text-neutral-600 mt-0.5">
+              Proyek: {order.title} ({order.clientName})
+            </p>
           </div>
         </div>
 
-        {/* Metrik capaian */}
+        {/* Metrik capaian utama */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <div className="rounded-xl bg-neutral-50 border border-neutral-200 p-3">
-            <p className="text-xs text-neutral-600">Skor Akhir</p>
-            <p className="text-2xl font-semibold text-neutral-900 tabular-nums mt-0.5">
-              {formatScore(state.score)}
+            <p className="text-xs text-neutral-600">Total Biaya Modul</p>
+            <p className="text-lg font-semibold text-neutral-900 tabular-nums mt-0.5">
+              {formatRupiah(buildEval.totalSpent)}
             </p>
             <p className="text-[11px] text-neutral-500 tabular-nums">
-              Terbaik: {formatScore(Math.max(bestScore, state.score))}
+              Sisa: {formatRupiah(state.balance)}
             </p>
           </div>
           <div className="rounded-xl bg-neutral-50 border border-neutral-200 p-3">
-            <p className="text-xs text-neutral-600">Akurasi</p>
-            <p className="text-2xl font-semibold text-emerald-800 tabular-nums mt-0.5">
-              {formatPercent(accuracy)}
+            <p className="text-xs text-neutral-600">Skor Performa</p>
+            <p className="text-2xl font-semibold text-blue-700 tabular-nums mt-0.5">
+              {buildEval.benchmarkScore}/100
             </p>
             <p className="text-[11px] text-neutral-500 tabular-nums">
-              {state.mistakes} salah
-              {state.repairedPartsCount > 0 ? ` · ${state.repairedPartsCount} RMA` : ''}
+              Akurasi {formatPercent(accuracy)} ({state.mistakes} salah
+              {state.repairedPartsCount > 0 ? ` · ${state.repairedPartsCount} RMA` : ''})
             </p>
-          </div>
-          <div className="rounded-xl bg-neutral-50 border border-neutral-200 p-3">
-            <p className="text-xs text-neutral-600">Waktu Rakit</p>
-            <p className="text-2xl font-semibold text-neutral-900 tabular-nums mt-0.5">
-              {formatDuration(state.elapsedSeconds)}
-            </p>
-            <p className="text-[11px] text-neutral-500">10 dari 10 langkah</p>
           </div>
           <div className="rounded-xl bg-neutral-50 border border-neutral-200 p-3">
             <p className="text-xs text-neutral-600">Beban Daya</p>
-            <p className="text-2xl font-semibold text-blue-700 tabular-nums mt-0.5">
+            <p className="text-2xl font-semibold text-neutral-900 tabular-nums mt-0.5">
               {formatWatts(totalWatts)}
             </p>
             <p className="text-[11px] text-neutral-500 tabular-nums">
-              {formatPercent(loadPercent)} dari {formatWatts(PSU_CAPACITY_WATTS)}
+              {formatPercent(loadPercent)} dari {formatWatts(psuCapacity)}
+            </p>
+          </div>
+          <div className="rounded-xl bg-neutral-50 border border-neutral-200 p-3">
+            <p className="text-xs text-neutral-600">Skor Simulasi</p>
+            <p className="text-2xl font-semibold text-emerald-800 tabular-nums mt-0.5">
+              {formatScore(state.score)}
+            </p>
+            <p className="text-[11px] text-neutral-500 tabular-nums">
+              Terbaik: {formatScore(Math.max(bestScore, state.score))} · {formatDuration(state.elapsedSeconds)}
             </p>
           </div>
         </div>
+
+        {/* Status Pembayaran Jasa Pesanan Klien */}
+        {!order.isSandbox && (
+          <div
+            className={`rounded-xl border p-3.5 flex flex-wrap items-center justify-between gap-3 ${
+              buildEval.allOrderRequirementsMet
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-950'
+                : 'bg-amber-50 border-amber-200 text-amber-950'
+            }`}
+          >
+            <div className="flex items-start gap-2.5 min-w-0">
+              {buildEval.allOrderRequirementsMet ? (
+                <Wallet className="w-4 h-4 text-emerald-800 shrink-0 mt-0.5" aria-hidden="true" />
+              ) : (
+                <AlertTriangle className="w-4 h-4 text-amber-800 shrink-0 mt-0.5" aria-hidden="true" />
+              )}
+              <div className="min-w-0">
+                <p className="text-xs font-semibold">
+                  {buildEval.allOrderRequirementsMet
+                    ? 'Semua Spesifikasi Klien Terpenuhi!'
+                    : 'PC Menyala, Namun Sebagian Spesifikasi Klien Belum Terpenuhi'}
+                </p>
+                <p className="text-[11px] mt-0.5 opacity-90">
+                  {buildEval.allOrderRequirementsMet
+                    ? `${order.clientName} sangat puas dengan pilihan modul dan kerapian rakitanmu.`
+                    : 'Coba periksa kembali target RAM, SSD, skor performa, atau kapasitas PSU di Toko Modul pada proyek berikutnya.'}
+                </p>
+              </div>
+            </div>
+            <span className="text-sm font-mono font-bold tabular-nums shrink-0">
+              {earnedFee > 0 ? `+${formatRupiah(earnedFee)}` : 'Rp0'}
+            </span>
+          </div>
+        )}
 
         {/* Bagian Pencapaian & Lencana (Achievements) */}
         <section
@@ -225,7 +300,7 @@ export function VictoryModal({
                           earned ? 'text-emerald-800' : 'text-neutral-400'
                         }`}
                       >
-                        {earned ? `+${ach.bonusScore}` : `+${ach.bonusScore}`}
+                        +{ach.bonusScore}
                       </span>
                     </div>
                     <p className="text-[11px] leading-snug mt-0.5 text-neutral-600">
@@ -245,12 +320,12 @@ export function VictoryModal({
             <span className="text-emerald-400">STATUS: OK</span>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5 tabular-nums">
-            <p>CPU: {preset.cpuModel} (LGA1700)</p>
-            <p>Suhu Idle CPU: {state.postResult?.idleTempC ?? preset.idleTempC}°C</p>
+            <p>CPU: {cpuInfo.model} (LGA1700)</p>
+            <p>Pendingin: {coolerInfo.model} ({state.postResult?.idleTempC ?? getEffectiveIdleTempC(state)}°C)</p>
             <p>Memori: {state.postResult?.ramModeLabel ?? '32 GB DDR5-5600 (Dual-Channel)'}</p>
-            <p>GPU: {preset.gpuModel}</p>
-            <p>Penyimpanan: Gen4 NVMe 1 TB (M.2_1)</p>
-            <p>Efisiensi PSU: {formatPercent(loadPercent)} · {preset.label}</p>
+            <p>GPU: {gpuInfo.model}</p>
+            <p>Penyimpanan: {ssdInfo.model}</p>
+            <p>PSU: {psuInfo.model} ({formatPercent(loadPercent)})</p>
           </div>
         </div>
 
@@ -259,18 +334,18 @@ export function VictoryModal({
           <button
             type="button"
             data-start="true"
-            onClick={onRestart}
+            onClick={onRestartWithShop}
             className="flex-1 min-h-11 px-5 py-2.5 rounded-xl bg-blue-700 hover:bg-blue-800 text-white text-sm font-semibold transition-colors flex items-center justify-center gap-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700"
           >
-            <RotateCcw className="w-4 h-4" aria-hidden="true" />
-            <span>Rakit Ulang</span>
+            <ShoppingBag className="w-4 h-4" aria-hidden="true" />
+            <span>Belanja &amp; Rakit Lagi</span>
           </button>
           <button
             type="button"
             onClick={onBackToTitle}
             className="min-h-11 px-5 py-2.5 rounded-xl border border-neutral-300 bg-white hover:bg-neutral-50 text-neutral-900 text-sm font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700"
           >
-            Layar Judul
+            Pilih Proyek Lain
           </button>
         </div>
       </div>
@@ -280,11 +355,13 @@ export function VictoryModal({
 
 interface HardwareInfoModalProps {
   partId: PartId;
+  state: AssemblyState;
   onClose: () => void;
 }
 
-export function HardwareInfoModal({ partId, onClose }: HardwareInfoModalProps) {
+export function HardwareInfoModal({ partId, state, onClose }: HardwareInfoModalProps) {
   const part = PARTS_BY_ID[partId];
+  const effective = getEffectivePartInfo(state, partId);
 
   return (
     <div
@@ -305,7 +382,7 @@ export function HardwareInfoModal({ partId, onClose }: HardwareInfoModalProps) {
                 {part.name}
               </h2>
               <p className="text-xs font-mono text-neutral-600 tabular-nums">
-                {part.model} · {part.specLine}
+                {effective.model} · {effective.specLine}
               </p>
             </div>
           </div>

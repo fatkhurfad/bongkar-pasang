@@ -1,12 +1,17 @@
-/* Komponen akar RakitPC Lab yang mengelola state permainan, HUD simulasi, manajemen suara multi-kanal, dan pintasan keyboard */
+/* Komponen akar RakitPC Lab yang mengelola proyek bengkel, Toko Modul, meja perakitan 3D/2D, audio multi-kanal, dan pintasan keyboard */
 
-import { Pause, RotateCcw, SlidersHorizontal, Volume2, VolumeX } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import {
+  Pause,
+  RotateCcw,
+  ShoppingBag,
+  SlidersHorizontal,
+  Volume2,
+  VolumeX,
+} from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ASSEMBLY_STEPS,
-  PSU_CAPACITY_WATTS,
   STORAGE_KEY,
-  type BuildPresetId,
   type GameMode,
   type PartId,
   type SlotId,
@@ -20,14 +25,19 @@ import {
 import { AudioPanelModal } from './components/AudioPanel';
 import { ComponentTray } from './components/ComponentTray';
 import { HardwareInfoModal, PauseModal, VictoryModal } from './components/GameModals';
+import { HardwareShopModal } from './components/HardwareShop';
 import { PostTerminalOverlay } from './components/PostTerminalOverlay';
 import { RobotBimoPanel } from './components/RobotBimo';
 import { TitleScreen } from './components/TitleScreen';
 import { WorkbenchStage, type WorkbenchViewMode } from './components/WorkbenchStage';
 import {
-  createInitialState,
+  autoFillRecommendedBuild,
+  buyCatalogModule,
+  buyDualChannelRamKit,
+  createWorkshopState,
   getCompletedStepCount,
   getProgressPercent,
+  getPsuCapacityWatts,
   getTotalWattage,
   installPartOnSlot,
   replaceDamagedPart,
@@ -35,13 +45,25 @@ import {
   rotateCpuOrientation,
   runPostCheck,
   selectPart,
+  sellCatalogModule,
   toggleCpuLatch,
   togglePsuSwitch,
   type ActionOutcome,
   type AssemblyState,
 } from './lib/assemblyEngine';
+import {
+  CLIENT_ORDERS,
+  evaluateBuildLoadout,
+  getShopCategoryForPart,
+  loadWorkshopWallet,
+  saveWorkshopWallet,
+  type BuyableSlotId,
+  type ClientOrderId,
+  type ShopCategory,
+  type WorkshopWallet,
+} from './lib/hardwareShop';
 import { buildPostLogSequence, type PostLogLine } from './lib/postSequence';
-import { formatDuration, formatScore, formatWatts } from './lib/formatters';
+import { formatRupiah, formatScore, formatWatts } from './lib/formatters';
 import {
   playSoundFx,
   setAmbientFanRunning,
@@ -88,19 +110,20 @@ function getInitialRandomFaultSetting(): boolean {
 
 export default function App() {
   const [selectedMode, setSelectedMode] = useState<GameMode>('belajar');
-  const [selectedPreset, setSelectedPreset] = useState<BuildPresetId>('efisien');
+  const [selectedOrderId, setSelectedOrderId] = useState<ClientOrderId>('gaming_efisien');
   const [randomFaultEnabled, setRandomFaultEnabled] = useState<boolean>(() =>
     getInitialRandomFaultSetting(),
   );
   const [viewMode, setViewMode] = useState<WorkbenchViewMode>('3d');
   const [state, setState] = useState<AssemblyState>(() =>
-    createInitialState(
-      'belajar',
-      shouldAutostart() ? 'playing' : 'title',
-      'efisien',
-      getInitialRandomFaultSetting(),
-    ),
+    createWorkshopState('gaming_efisien', 'belajar', {
+      screen: shouldAutostart() ? 'playing' : 'title',
+      randomFaultEnabled: getInitialRandomFaultSetting(),
+      startWithEmptyCart: !shouldAutostart(),
+    }),
   );
+  const [shopOpen, setShopOpen] = useState<boolean>(false);
+  const [shopCategory, setShopCategory] = useState<ShopCategory>('all');
   const [soundSettings, setSoundSettings] = useState<SoundSettings>(() => loadSoundSettings());
   const [audioPanelOpen, setAudioPanelOpen] = useState(false);
   const [lastAudioCue, setLastAudioCue] = useState<string | null>(null);
@@ -108,12 +131,15 @@ export default function App() {
   const [unlockedAchievements, setUnlockedAchievements] = useState<AchievementId[]>(() =>
     loadUnlockedAchievements(),
   );
+  const [workshopWallet, setWorkshopWallet] = useState<WorkshopWallet>(() => loadWorkshopWallet());
   const [infoPartId, setInfoPartId] = useState<PartId | null>(null);
   const [postRun, setPostRun] = useState<{
     lines: PostLogLine[];
     pendingOutcome: ActionOutcome;
     finalSoundPlayed: boolean;
   } | null>(null);
+
+  const rewardCreditedRef = useRef(false);
 
   const triggerSound = useCallback(
     (event: SoundEvent | null) => {
@@ -147,9 +173,15 @@ export default function App() {
     document.body.dataset.state = state.screen;
   }, [state.screen]);
 
-  // Penghitung waktu rakit aktif hanya saat bermain dan modal tidak terbuka
+  // Penghitung waktu rakit dijeda saat belanja di Toko Modul atau saat modal terbuka agar terasa santai
   useEffect(() => {
-    if (state.screen !== 'playing' || infoPartId !== null || audioPanelOpen || postRun !== null) {
+    if (
+      state.screen !== 'playing' ||
+      shopOpen ||
+      infoPartId !== null ||
+      audioPanelOpen ||
+      postRun !== null
+    ) {
       return;
     }
     const timer = window.setInterval(() => {
@@ -158,11 +190,14 @@ export default function App() {
       );
     }, 1000);
     return () => window.clearInterval(timer);
-  }, [state.screen, infoPartId, audioPanelOpen, postRun]);
+  }, [state.screen, shopOpen, infoPartId, audioPanelOpen, postRun]);
 
-  // Simpan skor terbaik dan gabungkan lencana pencapaian saat POST lulus
+  // Simpan skor terbaik, gabungkan lencana pencapaian, dan catat pembayaran jasa bengkel saat POST lulus
   useEffect(() => {
-    if (state.screen !== 'gameover') return;
+    if (state.screen !== 'gameover') {
+      rewardCreditedRef.current = false;
+      return;
+    }
     if (state.score > bestScore) {
       setBestScore(state.score);
       saveBestScore(state.score);
@@ -174,34 +209,66 @@ export default function App() {
         return merged;
       });
     }
-  }, [state.screen, state.score, state.earnedAchievements, bestScore]);
+    if (!rewardCreditedRef.current) {
+      rewardCreditedRef.current = true;
+      const order = CLIENT_ORDERS[state.orderId];
+      const evaluation = evaluateBuildLoadout(state.purchasedModules, state.orderId);
+      const payout = !order.isSandbox && evaluation.allOrderRequirementsMet ? order.serviceFee : 0;
+      setWorkshopWallet((prev) => {
+        const next: WorkshopWallet = {
+          totalEarnings: prev.totalEarnings + payout,
+          completedOrders: prev.completedOrders + 1,
+        };
+        saveWorkshopWallet(next);
+        return next;
+      });
+    }
+  }, [
+    state.screen,
+    state.score,
+    state.earnedAchievements,
+    state.orderId,
+    state.purchasedModules,
+    bestScore,
+  ]);
 
-  const startNewGame = useCallback(
-    (
-      modeOverride?: GameMode,
-      presetOverride?: BuildPresetId,
-      faultOverride?: boolean,
-    ) => {
-      const activeMode = modeOverride ?? selectedMode;
-      const activePreset = presetOverride ?? selectedPreset;
-      const activeFaults = faultOverride ?? randomFaultEnabled;
+  const startWorkshopSession = useCallback(
+    (options: {
+      openShopFirst: boolean;
+      modeOverride?: GameMode;
+      orderOverride?: ClientOrderId;
+      faultOverride?: boolean;
+    }) => {
+      const activeMode = options.modeOverride ?? selectedMode;
+      const activeOrder = options.orderOverride ?? selectedOrderId;
+      const activeFaults = options.faultOverride ?? randomFaultEnabled;
       if (document.activeElement instanceof HTMLElement) {
         document.activeElement.blur();
       }
+      rewardCreditedRef.current = false;
       setInfoPartId(null);
       setAudioPanelOpen(false);
       setPostRun(null);
       setLastAudioCue(null);
-      setState(createInitialState(activeMode, 'playing', activePreset, activeFaults));
+      setShopCategory('all');
+      setShopOpen(options.openShopFirst);
+      setState(
+        createWorkshopState(activeOrder, activeMode, {
+          screen: 'playing',
+          randomFaultEnabled: activeFaults,
+          startWithEmptyCart: options.openShopFirst,
+        }),
+      );
       playSoundFx('select', soundSettings);
     },
-    [selectedMode, selectedPreset, randomFaultEnabled, soundSettings],
+    [selectedMode, selectedOrderId, randomFaultEnabled, soundSettings],
   );
 
   const handleTogglePause = useCallback(() => {
     if (postRun !== null) return;
     setInfoPartId(null);
     setAudioPanelOpen(false);
+    setShopOpen(false);
     setState((prev) => {
       if (prev.screen === 'playing') return { ...prev, screen: 'paused' };
       if (prev.screen === 'paused') return { ...prev, screen: 'playing' };
@@ -212,10 +279,63 @@ export default function App() {
   const handleBackToTitle = useCallback(() => {
     setInfoPartId(null);
     setAudioPanelOpen(false);
+    setShopOpen(false);
     setPostRun(null);
     setLastAudioCue(null);
-    setState(createInitialState(selectedMode, 'title', selectedPreset, randomFaultEnabled));
-  }, [selectedMode, selectedPreset, randomFaultEnabled]);
+    setState(
+      createWorkshopState(selectedOrderId, selectedMode, {
+        screen: 'title',
+        randomFaultEnabled,
+        startWithEmptyCart: true,
+      }),
+    );
+  }, [selectedOrderId, selectedMode, randomFaultEnabled]);
+
+  const handleOpenShopForPart = useCallback((partId: PartId) => {
+    setShopCategory(getShopCategoryForPart(partId));
+    setShopOpen(true);
+  }, []);
+
+  const handleBuyModule = useCallback(
+    (skuId: string, preferredSlot?: BuyableSlotId) => {
+      setState((prev) => {
+        const outcome = buyCatalogModule(prev, skuId, preferredSlot);
+        triggerSound(outcome.sound);
+        return outcome.state;
+      });
+    },
+    [triggerSound],
+  );
+
+  const handleBuyDualRamKit = useCallback(
+    (skuId: string) => {
+      setState((prev) => {
+        const outcome = buyDualChannelRamKit(prev, skuId);
+        triggerSound(outcome.sound);
+        return outcome.state;
+      });
+    },
+    [triggerSound],
+  );
+
+  const handleSellModule = useCallback(
+    (slotId: BuyableSlotId) => {
+      setState((prev) => {
+        const outcome = sellCatalogModule(prev, slotId);
+        triggerSound(outcome.sound);
+        return outcome.state;
+      });
+    },
+    [triggerSound],
+  );
+
+  const handleAutoFillRecommended = useCallback(() => {
+    setState((prev) => {
+      const outcome = autoFillRecommendedBuild(prev);
+      triggerSound(outcome.sound);
+      return outcome.state;
+    });
+  }, [triggerSound]);
 
   const handleSelectPart = useCallback(
     (partId: PartId) => {
@@ -256,7 +376,7 @@ export default function App() {
             ...prev,
             robotMood: 'guiding',
             robotMessage:
-              'Pilih dulu komponen dari Baki Komponen di kiri (atau seret langsung) sebelum mengklik slot target.',
+              'Pilih dulu komponen yang sudah dibeli dari Baki Komponen di kiri (atau seret langsung) sebelum mengklik slot target.',
           };
         }
         const outcome = installPartOnSlot(prev, partToUse, slotId);
@@ -359,8 +479,14 @@ export default function App() {
       if (state.screen === 'title') {
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault();
-          startNewGame();
+          startWorkshopSession({ openShopFirst: true });
         }
+        return;
+      }
+
+      if (shopOpen && event.key === 'Escape') {
+        event.preventDefault();
+        setShopOpen(false);
         return;
       }
 
@@ -384,7 +510,7 @@ export default function App() {
         return;
       }
 
-      if (state.screen !== 'playing' || infoPartId !== null || audioPanelOpen) return;
+      if (state.screen !== 'playing' || shopOpen || infoPartId !== null || audioPanelOpen) return;
 
       const lower = event.key.toLowerCase();
       if (lower === 'r' && state.phase === 'bench') {
@@ -396,6 +522,9 @@ export default function App() {
       } else if (lower === 'm') {
         event.preventDefault();
         handleToggleMute();
+      } else if (lower === 'b') {
+        event.preventDefault();
+        setShopOpen(true);
       }
     };
 
@@ -404,9 +533,10 @@ export default function App() {
   }, [
     state.screen,
     state.phase,
+    shopOpen,
     infoPartId,
     audioPanelOpen,
-    startNewGame,
+    startWorkshopSession,
     handleTogglePause,
     handleRotateCpu,
     handleRequestHint,
@@ -417,14 +547,16 @@ export default function App() {
     return (
       <TitleScreen
         selectedMode={selectedMode}
-        selectedPreset={selectedPreset}
+        selectedOrderId={selectedOrderId}
         randomFaultEnabled={randomFaultEnabled}
         bestScore={bestScore}
         unlockedAchievements={unlockedAchievements}
+        workshopWallet={workshopWallet}
         onSelectMode={setSelectedMode}
-        onSelectPreset={setSelectedPreset}
+        onSelectOrder={setSelectedOrderId}
         onToggleRandomFault={setRandomFaultEnabled}
-        onStart={() => startNewGame(selectedMode, selectedPreset, randomFaultEnabled)}
+        onStartWithShop={() => startWorkshopSession({ openShopFirst: true })}
+        onStartQuickBuild={() => startWorkshopSession({ openShopFirst: false })}
       />
     );
   }
@@ -432,24 +564,30 @@ export default function App() {
   const completedSteps = getCompletedStepCount(state);
   const progressPercent = getProgressPercent(state);
   const totalWatts = getTotalWattage(state);
+  const psuCapacity = getPsuCapacityWatts(state);
+  const buildEval = evaluateBuildLoadout(state.purchasedModules, state.orderId);
+  const activeOrder = CLIENT_ORDERS[state.orderId];
 
   return (
     <div className="min-h-screen bg-neutral-50 text-neutral-900 flex flex-col">
-      {/* HUD Simulasi Ringkas (1 baris, tanpa bilah navigasi situs web) */}
+      {/* HUD Simulasi Ringkas (1 baris, fokus pada proyek, anggaran, daya, dan akses cepat Toko Modul) */}
       <div
         role="region"
         aria-label="Panel Status Simulasi"
         className="bg-white border-b border-neutral-200 px-4 py-2.5"
       >
         <div className="max-w-[1440px] mx-auto flex flex-wrap items-center justify-between gap-3">
-          {/* Nama permainan & progres langkah */}
-          <div className="flex items-center gap-4 min-w-0">
+          {/* Nama permainan, proyek aktif, & progres langkah */}
+          <div className="flex items-center gap-3.5 min-w-0">
             <span className="text-base font-bold tracking-tight text-neutral-900 whitespace-nowrap shrink-0">
               RakitPC Lab
             </span>
-            <div className="flex items-center gap-2.5 min-w-0">
+            <span className="hidden xl:inline text-xs text-neutral-500 truncate max-w-[180px]">
+              {activeOrder.title}
+            </span>
+            <div className="flex items-center gap-2 min-w-0">
               <div
-                className="w-24 sm:w-32 h-2 rounded-full bg-neutral-200 overflow-hidden shrink-0"
+                className="w-20 sm:w-28 h-2 rounded-full bg-neutral-200 overflow-hidden shrink-0"
                 role="progressbar"
                 aria-valuenow={progressPercent}
                 aria-valuemin={0}
@@ -467,21 +605,25 @@ export default function App() {
             </div>
           </div>
 
-          {/* Metrik live: Daya, Waktu, Skor */}
-          <div className="flex items-center gap-4 sm:gap-6 text-xs tabular-nums">
+          {/* Metrik live bengkel: Sisa Anggaran, Daya, Skor */}
+          <div className="flex items-center gap-4 sm:gap-5 text-xs tabular-nums">
+            <div>
+              <span className="text-neutral-500">Saldo </span>
+              <span className="font-mono font-semibold text-emerald-800">
+                {formatRupiah(state.balance)}
+              </span>
+            </div>
             <div>
               <span className="text-neutral-500">Daya </span>
-              <span className="font-mono font-semibold text-neutral-900">
-                {formatWatts(totalWatts)} / {formatWatts(PSU_CAPACITY_WATTS)}
+              <span
+                className={`font-mono font-semibold ${
+                  totalWatts > psuCapacity ? 'text-red-700' : 'text-neutral-900'
+                }`}
+              >
+                {formatWatts(totalWatts)} / {formatWatts(psuCapacity)}
               </span>
             </div>
-            <div>
-              <span className="text-neutral-500">Waktu </span>
-              <span className="font-mono font-semibold text-neutral-900">
-                {formatDuration(state.elapsedSeconds)}
-              </span>
-            </div>
-            <div>
+            <div className="hidden sm:block">
               <span className="text-neutral-500">Skor </span>
               <span className="font-mono font-semibold text-blue-700">
                 {formatScore(state.score)}
@@ -489,8 +631,28 @@ export default function App() {
             </div>
           </div>
 
-          {/* Kontrol utilitas: Suara, Mixer Audio, Jeda, Ulang */}
+          {/* Kontrol utilitas: Toko Modul, Suara, Mixer Audio, Jeda, Ulang */}
           <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.currentTarget.blur();
+                setShopCategory('all');
+                setShopOpen(true);
+              }}
+              data-testid="hud-open-shop"
+              className={`min-h-10 px-3 py-1.5 rounded-xl text-xs font-semibold transition-colors flex items-center gap-1.5 whitespace-nowrap focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700 ${
+                buildEval.missingSlots.length > 0
+                  ? 'bg-blue-700 hover:bg-blue-800 text-white'
+                  : 'border border-neutral-300 bg-white hover:bg-neutral-100 text-neutral-900'
+              }`}
+            >
+              <ShoppingBag className="w-4 h-4 shrink-0" aria-hidden="true" />
+              <span>
+                Toko Modul ({buildEval.ownedCount}/{buildEval.totalRequiredCount})
+              </span>
+            </button>
+
             <button
               type="button"
               onClick={(e) => {
@@ -535,9 +697,9 @@ export default function App() {
               type="button"
               onClick={(e) => {
                 e.currentTarget.blur();
-                startNewGame();
+                startWorkshopSession({ openShopFirst: true });
               }}
-              aria-label="Ulangi perakitan dari awal"
+              aria-label="Ulangi proyek dari awal"
               className="w-10 h-10 rounded-xl border border-neutral-200 bg-white hover:bg-neutral-100 text-neutral-700 flex items-center justify-center transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700"
             >
               <RotateCcw className="w-4 h-4" aria-hidden="true" />
@@ -555,6 +717,7 @@ export default function App() {
             onRotateCpu={handleRotateCpu}
             onInspectPart={setInfoPartId}
             onReplaceDamagedPart={handleReplaceDamagedPart}
+            onOpenShopForPart={handleOpenShopForPart}
           />
         </div>
 
@@ -582,6 +745,20 @@ export default function App() {
         </div>
       </main>
 
+      {/* Modal Toko Modul Hardware (Belanja / Tukar / Cek Daya & Target Klien) */}
+      {shopOpen && state.screen === 'playing' && (
+        <HardwareShopModal
+          state={state}
+          activeCategory={shopCategory}
+          onSelectCategory={setShopCategory}
+          onBuyModule={handleBuyModule}
+          onBuyDualRamKit={handleBuyDualRamKit}
+          onSellModule={handleSellModule}
+          onAutoFillRecommended={handleAutoFillRecommended}
+          onCloseShop={() => setShopOpen(false)}
+        />
+      )}
+
       {/* Overlay Terminal BIOS POST saat uji nyala berlangsung */}
       {postRun !== null && (
         <PostTerminalOverlay
@@ -606,24 +783,32 @@ export default function App() {
       {state.screen === 'paused' && (
         <PauseModal
           onResume={handleTogglePause}
-          onRestart={() => startNewGame()}
+          onOpenShop={() => {
+            setState((prev) => ({ ...prev, screen: 'playing' }));
+            setShopOpen(true);
+          }}
+          onRestart={() => startWorkshopSession({ openShopFirst: true })}
           onBackToTitle={handleBackToTitle}
         />
       )}
 
-      {/* Modal Kemenangan / Ringkasan BIOS POST */}
+      {/* Modal Kemenangan / Ringkasan BIOS POST & Pembayaran Jasa Bengkel */}
       {state.screen === 'gameover' && (
         <VictoryModal
           state={state}
           bestScore={bestScore}
-          onRestart={() => startNewGame()}
+          onRestartWithShop={() => startWorkshopSession({ openShopFirst: true })}
           onBackToTitle={handleBackToTitle}
         />
       )}
 
       {/* Modal Info Edukasi Hardware */}
       {infoPartId !== null && (
-        <HardwareInfoModal partId={infoPartId} onClose={() => setInfoPartId(null)} />
+        <HardwareInfoModal
+          partId={infoPartId}
+          state={state}
+          onClose={() => setInfoPartId(null)}
+        />
       )}
     </div>
   );

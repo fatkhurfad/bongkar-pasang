@@ -1,8 +1,15 @@
 /* Generator log terminal BIOS POST dan status LED diagnostik bertahap untuk simulasi nyala komputer */
 
-import { BUILD_PRESETS, PSU_CAPACITY_WATTS } from '../config';
-import type { AssemblyState, PostDiagnosticResult, PostLedKey } from './assemblyEngine';
-import { getTotalWattage } from './assemblyEngine';
+import {
+  getEffectiveIdleTempC,
+  getEffectivePartInfo,
+  getPsuCapacityWatts,
+  getPurchasedSku,
+  getTotalWattage,
+  type AssemblyState,
+  type PostDiagnosticResult,
+  type PostLedKey,
+} from './assemblyEngine';
 
 export type PostStage = 'POWER' | 'CPU' | 'DRAM' | 'VGA' | 'BOOT' | 'BIOS';
 
@@ -24,8 +31,17 @@ export function buildPostLogSequence(
   state: AssemblyState,
   result: PostDiagnosticResult,
 ): PostLogLine[] {
-  const preset = BUILD_PRESETS[state.buildPreset];
+  const cpuInfo = getEffectivePartInfo(state, 'cpu');
+  const gpuInfo = getEffectivePartInfo(state, 'gpu');
+  const ssdSku = getPurchasedSku(state, 'ssd_nvme');
+  const ramA2Sku = getPurchasedSku(state, 'ram_a2');
+  const ramB2Sku = getPurchasedSku(state, 'ram_b2');
+  const psuCapacity = getPsuCapacityWatts(state);
+  const idleTempC = getEffectiveIdleTempC(state);
   const watts = getTotalWattage(state);
+  const totalRamMb = ((ramA2Sku?.ramGb ?? 16) + (ramB2Sku?.ramGb ?? 16)) * 1024;
+  const ramSpeed = Math.min(ramA2Sku?.ramSpeedMhz ?? 5600, ramB2Sku?.ramSpeedMhz ?? 5600);
+  const ssdGb = ssdSku?.ssdGb ?? 1000;
 
   const lines: PostLogLine[] = [
     {
@@ -38,14 +54,14 @@ export function buildPostLogSequence(
     },
   ];
 
-  // Kasus 1: Tidak ada daya (PSU belum dipasang / OFF / kabel 24-Pin belum colok)
+  // Kasus 1: Tidak ada daya atau PSU Overload (OCP Trip)
   if (!result.passed && result.faultLed === null) {
     lines.push(
       {
         id: 'pwr_check',
         stage: 'POWER',
         tag: 'PWR ',
-        text: `Memeriksa tegangan siaga 5VSB dari PSU ${PSU_CAPACITY_WATTS} W...`,
+        text: `Memeriksa tegangan siaga 5VSB & kapasitas PSU ${psuCapacity} W...`,
         status: 'info',
         delayMs: 200,
       },
@@ -67,7 +83,7 @@ export function buildPostLogSequence(
     id: 'pwr_ok',
     stage: 'POWER',
     tag: 'PWR ',
-    text: `Power Good (PG) +12.02V / +5.01V / +3.32V · Beban ${watts} W`,
+    text: `Power Good (PG) +12.02V / +5.01V / +3.32V · Beban ${watts} W / ${psuCapacity} W`,
     resultLabel: 'OK',
     status: 'ok',
     delayMs: 150,
@@ -80,7 +96,7 @@ export function buildPostLogSequence(
         id: 'cpu_init',
         stage: 'CPU',
         tag: 'CPU ',
-        text: `Menginisialisasi ${preset.cpuModel} pada soket LGA1700...`,
+        text: `Menginisialisasi ${cpuInfo.model} pada soket LGA1700...`,
         status: 'info',
         delayMs: 190,
       },
@@ -102,7 +118,7 @@ export function buildPostLogSequence(
     id: 'cpu_ok',
     stage: 'CPU',
     tag: 'CPU ',
-    text: `${preset.cpuModel} (LGA1700) · Suhu Idle ${preset.idleTempC}°C · PWM 1150 RPM`,
+    text: `${cpuInfo.model} (LGA1700) · Suhu Idle ${idleTempC}°C · PWM 1150 RPM`,
     resultLabel: 'OK',
     status: 'ok',
     delayMs: 160,
@@ -137,7 +153,7 @@ export function buildPostLogSequence(
     id: 'dram_ok',
     stage: 'DRAM',
     tag: 'DRAM',
-    text: '32768 MB DDR5-5600 Dual-Channel (DIMM_A2 + DIMM_B2)',
+    text: `${totalRamMb} MB DDR5-${ramSpeed} Dual-Channel (DIMM_A2 + DIMM_B2)`,
     resultLabel: 'OK',
     status: 'ok',
     delayMs: 165,
@@ -174,7 +190,7 @@ export function buildPostLogSequence(
         id: 'vga_ok_preboot',
         stage: 'VGA',
         tag: 'VGA ',
-        text: `PCIe 4.0 x16 · ${preset.gpuModel} · VBIOS Verified`,
+        text: `PCIe 4.0 x16 · ${gpuInfo.model} · VBIOS Verified`,
         resultLabel: 'OK',
         status: 'ok',
         delayMs: 155,
@@ -198,7 +214,7 @@ export function buildPostLogSequence(
       id: 'vga_ok',
       stage: 'VGA',
       tag: 'VGA ',
-      text: `PCIe 4.0 x16 · ${preset.gpuModel} · VBIOS Verified`,
+      text: `PCIe 4.0 x16 · ${gpuInfo.model} · VBIOS Verified`,
       resultLabel: 'OK',
       status: 'ok',
       delayMs: 165,
@@ -207,7 +223,7 @@ export function buildPostLogSequence(
       id: 'boot_ok',
       stage: 'BOOT',
       tag: 'NVMe',
-      text: 'M.2_1 PCIe Gen4 x4 · 1000 GB NVMe SSD Terdeteksi',
+      text: `M.2_1 PCIe · ${ssdGb} GB NVMe SSD Terdeteksi`,
       resultLabel: 'OK',
       status: 'ok',
       delayMs: 160,

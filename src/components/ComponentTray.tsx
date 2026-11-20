@@ -1,12 +1,21 @@
-/* Panel baki komponen perangkat keras yang dapat dipilih, diputar, diganti saat rusak (RMA), atau diseret ke meja rakit */
+/* Panel baki komponen perangkat keras yang menampilkan modul yang telah dibeli, tombol belanja modul kosong, rotasi CPU, dan penggantian RMA */
 
-import { AlertTriangle, CheckCircle2, Info, RefreshCw, RotateCw } from 'lucide-react';
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Info,
+  RefreshCw,
+  RotateCw,
+  ShoppingBag,
+} from 'lucide-react';
 import type { DragEvent } from 'react';
-import { BUILD_PRESETS, type PartId } from '../config';
+import type { PartId } from '../config';
 import {
   getActiveHintTarget,
+  getEffectivePartInfo,
   getPhaseParts,
   hasPart,
+  isPartOwned,
   type AssemblyState,
 } from '../lib/assemblyEngine';
 import { formatAngle } from '../lib/formatters';
@@ -18,6 +27,7 @@ interface ComponentTrayProps {
   onRotateCpu: () => void;
   onInspectPart: (partId: PartId) => void;
   onReplaceDamagedPart: (partId: PartId) => void;
+  onOpenShopForPart: (partId: PartId) => void;
 }
 
 export function ComponentTray({
@@ -26,10 +36,10 @@ export function ComponentTray({
   onRotateCpu,
   onInspectPart,
   onReplaceDamagedPart,
+  onOpenShopForPart,
 }: ComponentTrayProps) {
   const parts = getPhaseParts(state.phase);
   const hint = getActiveHintTarget(state);
-  const preset = BUILD_PRESETS[state.buildPreset];
 
   const handleDragStart = (event: DragEvent<HTMLButtonElement>, partId: PartId) => {
     event.dataTransfer.setData('text/plain', partId);
@@ -72,70 +82,69 @@ export function ComponentTray({
       {/* Daftar komponen pada fase aktif */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-1 gap-2">
         {parts.map((part) => {
+          const owned = isPartOwned(state, part.id);
           const installed = hasPart(state, part.id);
           const damagedInfo = state.damagedParts[part.id];
           const isDamaged = Boolean(damagedInfo);
           const selected = state.selectedPart === part.id;
-          const isHinted = hint.part === part.id && !installed && !isDamaged;
-          const modelLabel =
-            part.id === 'cpu'
-              ? preset.cpuModel
-              : part.id === 'gpu'
-                ? preset.gpuModel
-                : part.model;
-          const specLabel =
-            part.id === 'cpu'
-              ? preset.cpuSpecLine
-              : part.id === 'gpu'
-                ? preset.gpuSpecLine
-                : part.specLine;
+          const isHinted = hint.part === part.id && owned && !installed && !isDamaged;
+          const effective = getEffectivePartInfo(state, part.id);
 
           return (
             <div key={part.id} className="flex flex-col gap-1.5 min-w-0">
               <div className="relative flex items-stretch gap-1.5 min-w-0">
                 <button
                   type="button"
-                  draggable={!installed && !isDamaged}
+                  draggable={owned && !installed && !isDamaged}
                   onDragStart={(e) => handleDragStart(e, part.id)}
-                  onClick={() => onSelectPart(part.id)}
+                  onClick={() => (owned ? onSelectPart(part.id) : onOpenShopForPart(part.id))}
                   aria-pressed={selected}
-                  aria-label={`${part.name}, ${specLabel}, ${
-                    isDamaged
-                      ? 'Part Rusak, perlu diganti'
-                      : installed
-                        ? 'sudah terpasang'
-                        : selected
-                          ? 'sedang dipilih'
-                          : 'pilih komponen'
+                  aria-label={`${part.name}, ${
+                    !owned
+                      ? 'belum dibeli, klik untuk buka toko modul'
+                      : isDamaged
+                        ? 'Part Rusak, perlu diganti'
+                        : installed
+                          ? `${effective.model}, sudah terpasang`
+                          : selected
+                            ? `${effective.model}, sedang dipilih`
+                            : `${effective.model}, pilih komponen`
                   }`}
                   className={`flex-1 min-w-0 overflow-hidden min-h-16 text-left rounded-xl border p-2.5 flex items-center gap-3 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700 ${
-                    isDamaged
-                      ? 'bg-red-50 border-red-400 text-red-950'
-                      : installed
-                        ? 'bg-neutral-50 border-neutral-200 text-neutral-500'
-                        : selected
-                          ? 'bg-blue-50 border-blue-700 ring-1 ring-blue-700 text-neutral-900'
-                          : isHinted
-                            ? 'bg-blue-50/60 border-blue-500 text-neutral-900 hover:bg-blue-50'
-                            : 'bg-white border-neutral-200 text-neutral-900 hover:border-neutral-400 hover:bg-neutral-50'
+                    !owned
+                      ? 'bg-amber-50/50 border-amber-300 border-dashed text-neutral-900 hover:bg-amber-50'
+                      : isDamaged
+                        ? 'bg-red-50 border-red-400 text-red-950'
+                        : installed
+                          ? 'bg-neutral-50 border-neutral-200 text-neutral-500'
+                          : selected
+                            ? 'bg-blue-50 border-blue-700 ring-1 ring-blue-700 text-neutral-900'
+                            : isHinted
+                              ? 'bg-blue-50/60 border-blue-500 text-neutral-900 hover:bg-blue-50'
+                              : 'bg-white border-neutral-200 text-neutral-900 hover:border-neutral-400 hover:bg-neutral-50'
                   }`}
                 >
                   <div
                     className={`w-12 h-12 rounded-lg flex items-center justify-center shrink-0 ${
-                      isDamaged ? 'bg-red-100' : 'bg-neutral-100'
+                      isDamaged ? 'bg-red-100' : !owned ? 'bg-amber-100/70' : 'bg-neutral-100'
                     }`}
                   >
                     <PartThumbnail
                       partId={part.id}
                       rotation={part.id === 'cpu' && !installed ? state.cpuRotation : 0}
-                      className="w-10 h-10"
+                      className={`w-10 h-10 ${!owned ? 'opacity-60' : ''}`}
                     />
                   </div>
 
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center justify-between gap-1.5">
-                      <span className="text-sm font-semibold truncate">{part.shortName}</span>
-                      {isDamaged ? (
+                      <span className="text-sm font-semibold truncate">{part.name}</span>
+                      {!owned ? (
+                        <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-800 shrink-0">
+                          <ShoppingBag className="w-3.5 h-3.5" aria-hidden="true" />
+                          <span>Beli</span>
+                        </span>
+                      ) : isDamaged ? (
                         <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-red-800 shrink-0">
                           <AlertTriangle className="w-3.5 h-3.5" aria-hidden="true" />
                           <span>Part Rusak</span>
@@ -146,17 +155,35 @@ export function ComponentTray({
                     </div>
                     <p
                       className={`text-xs truncate mt-0.5 ${
-                        isDamaged ? 'text-red-800 font-medium' : 'text-neutral-600'
+                        !owned
+                          ? 'text-amber-900 font-medium'
+                          : isDamaged
+                            ? 'text-red-800 font-medium'
+                            : 'text-neutral-600'
                       }`}
                     >
-                      {isDamaged ? damagedInfo?.label : modelLabel}
+                      {!owned
+                        ? 'Belum dibeli di Toko Modul'
+                        : isDamaged
+                          ? damagedInfo?.label
+                          : effective.model}
                     </p>
                     <p
                       className={`text-[11px] font-mono truncate mt-0.5 tabular-nums ${
-                        isDamaged ? 'text-red-700' : 'text-neutral-500'
+                        !owned
+                          ? 'text-amber-800'
+                          : isDamaged
+                            ? 'text-red-700'
+                            : 'text-neutral-500'
                       }`}
                     >
-                      {isDamaged ? 'Perlu Penggantian (RMA)' : installed ? 'Terpasang' : specLabel}
+                      {!owned
+                        ? 'Klik untuk memilih & membeli modul'
+                        : isDamaged
+                          ? 'Perlu Penggantian (RMA)'
+                          : installed
+                            ? 'Terpasang'
+                            : effective.specLine}
                     </p>
                   </div>
                 </button>
@@ -188,9 +215,8 @@ export function ComponentTray({
       </div>
 
       <p className="text-xs text-neutral-600 leading-snug pt-1 border-t border-neutral-200">
-        Klik komponen lalu klik slot target 3D, atau seret langsung ke papan rakit.
+        Klik komponen lalu klik slot target 3D, atau buka Toko Modul untuk membeli &amp; menukar part.
       </p>
     </section>
   );
 }
-

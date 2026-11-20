@@ -23,6 +23,8 @@ export type SoundEvent =
   | 'error'
   | 'part_damaged'
   | 'part_repaired'
+  | 'shop_buy'
+  | 'shop_sell'
   | 'post_tick'
   | 'post_ok'
   | 'post_fail';
@@ -135,6 +137,8 @@ const SOUND_DESCRIPTION_BY_EVENT: Partial<Record<SoundEvent, string>> = {
   install_cable_8pin_gpu: 'Klik klip konektor daya PCIe 8-Pin GPU',
   part_damaged: 'Peringatan kerusakan komponen (bunyi retak / percikan ESD)',
   part_repaired: 'Penggantian unit komponen baru (RMA) selesai',
+  shop_buy: 'Pembelian modul perangkat keras baru dari Toko Komponen',
+  shop_sell: 'Pengembalian modul ke Toko Komponen (refund saldo)',
   post_ok: '1 Beep POST normal & kipas mulai berputar halus',
   post_fail: 'Pola beep peringatan diagnostik POST',
 };

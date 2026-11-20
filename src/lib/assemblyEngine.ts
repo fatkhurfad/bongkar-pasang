@@ -6,6 +6,7 @@ import {
   HARDWARE_PARTS,
   MODE_DESCRIPTIONS,
   PARTS_BY_ID,
+  PSU_CAPACITY_WATTS,
   type AssemblyStepDef,
   type BuildPresetId,
   type GameMode,
@@ -19,6 +20,19 @@ import {
   evaluateRunAchievements,
   type AchievementId,
 } from './achievements';
+import { formatRupiah } from './formatters';
+import {
+  BUYABLE_SLOTS,
+  CATALOG_BY_SKU,
+  CLIENT_ORDERS,
+  computeLoadoutCost,
+  evaluateBuildLoadout,
+  getStarterLoadoutForPreset,
+  isBuyableSlot,
+  type BuyableSlotId,
+  type CatalogModuleSpec,
+  type ClientOrderId,
+} from './hardwareShop';
 import { getPartSoundEvent, type SoundEvent } from './soundSettings';
 
 export type GameScreenState = 'title' | 'playing' | 'paused' | 'gameover';
@@ -52,6 +66,10 @@ export interface AssemblyState {
   screen: GameScreenState;
   mode: GameMode;
   buildPreset: BuildPresetId;
+  orderId: ClientOrderId;
+  budget: number;
+  balance: number;
+  purchasedModules: Partial<Record<BuyableSlotId, string>>;
   phase: WorkbenchPhase;
   installedParts: PartId[];
   damagedParts: Partial<Record<PartId, PartDamageInfo>>;
@@ -94,10 +112,24 @@ export function createInitialState(
   randomFaultEnabled = false,
 ): AssemblyState {
   const firstStep = ASSEMBLY_STEPS[0];
+  const orderId: ClientOrderId =
+    buildPreset === 'hemat'
+      ? 'kantor_hemat'
+      : buildPreset === 'berat'
+        ? 'workstation_pro'
+        : 'gaming_efisien';
+  const starterModules = getStarterLoadoutForPreset(buildPreset);
+  const starterCost = computeLoadoutCost(starterModules);
+  const orderBudget = Math.max(CLIENT_ORDERS[orderId].budget, starterCost);
+
   return {
     screen,
     mode,
     buildPreset,
+    orderId,
+    budget: orderBudget,
+    balance: orderBudget - starterCost,
+    purchasedModules: { ...starterModules },
     phase: 'bench',
     installedParts: [],
     damagedParts: {},
@@ -125,6 +157,43 @@ export function createInitialState(
     fansSpinning: false,
     earnedAchievements: [],
     achievementBonus: 0,
+  };
+}
+
+export function createWorkshopState(
+  orderId: ClientOrderId,
+  mode: GameMode = 'belajar',
+  options: {
+    screen?: GameScreenState;
+    randomFaultEnabled?: boolean;
+    startWithEmptyCart?: boolean;
+  } = {},
+): AssemblyState {
+  const order = CLIENT_ORDERS[orderId];
+  const startEmpty = options.startWithEmptyCart ?? true;
+  const presetFromOrder: BuildPresetId =
+    orderId === 'kantor_hemat' ? 'hemat' : orderId === 'workstation_pro' ? 'berat' : 'efisien';
+  const purchasedModules: Partial<Record<BuyableSlotId, string>> = startEmpty
+    ? {}
+    : { ...order.recommendedLoadout };
+  const spent = computeLoadoutCost(purchasedModules);
+  const base = createInitialState(
+    mode,
+    options.screen ?? 'playing',
+    presetFromOrder,
+    options.randomFaultEnabled ?? false,
+  );
+
+  return {
+    ...base,
+    orderId,
+    budget: order.budget,
+    balance: Math.max(0, order.budget - spent),
+    purchasedModules,
+    robotMood: 'guiding',
+    robotMessage: startEmpty
+      ? `Halo! Aku BIMO. Kita menerima proyek "${order.title}" dengan anggaran ${formatRupiah(order.budget)}. Belanja dulu modul CPU, pendingin, RAM, SSD, PSU, motherboard, dan GPU di Toko Modul!`
+      : `Paket modul untuk "${order.title}" sudah siap di meja anti-statis! Klik tuas soket LGA1700 untuk memulai perakitan.`,
   };
 }
 
@@ -215,7 +284,91 @@ export function getProgressPercent(state: AssemblyState): number {
   return Math.round((getCompletedStepCount(state) / ASSEMBLY_STEPS.length) * 100);
 }
 
+export function getPurchasedSku(
+  state: AssemblyState,
+  partId: PartId,
+): CatalogModuleSpec | null {
+  if (!isBuyableSlot(partId)) return null;
+  const skuId = state.purchasedModules[partId];
+  return skuId ? (CATALOG_BY_SKU[skuId] ?? null) : null;
+}
+
+export function isPartOwned(state: AssemblyState, partId: PartId): boolean {
+  if (isBuyableSlot(partId)) {
+    return Boolean(state.purchasedModules[partId]);
+  }
+  // Kabel modular (24-Pin, 8-Pin CPU, 8-Pin GPU) otomatis tersedia saat PSU sudah dibeli
+  return Boolean(state.purchasedModules.psu);
+}
+
+export function getEffectivePartInfo(
+  state: AssemblyState,
+  partId: PartId,
+): { model: string; specLine: string; shortCode: string; wattage: number; price: number } {
+  const sku = getPurchasedSku(state, partId);
+  if (sku) {
+    return {
+      model: sku.model,
+      specLine: sku.specLine,
+      shortCode: sku.shortCode,
+      wattage: sku.wattage,
+      price: sku.price,
+    };
+  }
+  const preset = BUILD_PRESETS[state.buildPreset];
+  const base = PARTS_BY_ID[partId];
+  if (partId === 'cpu') {
+    return {
+      model: preset.cpuModel,
+      specLine: preset.cpuSpecLine,
+      shortCode: preset.cpuShortCode,
+      wattage: preset.cpuWattage,
+      price: 0,
+    };
+  }
+  if (partId === 'gpu') {
+    return {
+      model: preset.gpuModel,
+      specLine: preset.gpuSpecLine,
+      shortCode: preset.gpuShortLabel,
+      wattage: preset.gpuWattage,
+      price: 0,
+    };
+  }
+  return {
+    model: base.model,
+    specLine: base.specLine,
+    shortCode: base.shortName,
+    wattage: base.wattage,
+    price: 0,
+  };
+}
+
+export function getPsuCapacityWatts(state: AssemblyState): number {
+  const psuSku = getPurchasedSku(state, 'psu');
+  return psuSku?.psuCapacityWatts ?? PSU_CAPACITY_WATTS;
+}
+
+export function getEffectiveIdleTempC(state: AssemblyState): number {
+  const evaluation = evaluateBuildLoadout(state.purchasedModules, state.orderId);
+  if (state.purchasedModules.cpu) {
+    return evaluation.estimatedIdleTempC;
+  }
+  return BUILD_PRESETS[state.buildPreset].idleTempC;
+}
+
+export function getRamSummaryLabel(state: AssemblyState): string {
+  const ramA2 = getPurchasedSku(state, 'ram_a2');
+  const ramB2 = getPurchasedSku(state, 'ram_b2');
+  const totalGb = (ramA2?.ramGb ?? 16) + (ramB2?.ramGb ?? 16);
+  const speed = Math.min(ramA2?.ramSpeedMhz ?? 5600, ramB2?.ramSpeedMhz ?? 5600);
+  const dual = hasPart(state, 'ram_a2') && hasPart(state, 'ram_b2');
+  return `${totalGb} GB DDR5-${speed} (${dual ? 'Dual-Channel' : 'Single-Channel'})`;
+}
+
 export function getPartWattage(state: AssemblyState, partId: PartId): number {
+  const sku = getPurchasedSku(state, partId);
+  if (sku) return sku.wattage;
   const preset = BUILD_PRESETS[state.buildPreset];
   if (partId === 'cpu') return preset.cpuWattage;
   if (partId === 'gpu') return preset.gpuWattage;
@@ -224,6 +377,227 @@ export function getPartWattage(state: AssemblyState, partId: PartId): number {
 
 export function getTotalWattage(state: AssemblyState): number {
   return state.installedParts.reduce((sum, partId) => sum + getPartWattage(state, partId), 0);
+}
+
+export function buyCatalogModule(
+  state: AssemblyState,
+  skuId: string,
+  preferredSlot?: BuyableSlotId,
+): ActionOutcome {
+  const sku = CATALOG_BY_SKU[skuId];
+  if (!sku) return { ok: false, sound: 'error', state };
+
+  let targetSlot: BuyableSlotId = sku.slotFamily;
+  if (sku.slotFamily === 'ram_a2') {
+    if (preferredSlot === 'ram_a2' || preferredSlot === 'ram_b2') {
+      targetSlot = preferredSlot;
+    } else if (!state.purchasedModules.ram_a2) {
+      targetSlot = 'ram_a2';
+    } else if (!state.purchasedModules.ram_b2) {
+      targetSlot = 'ram_b2';
+    } else if (!hasPart(state, 'ram_b2')) {
+      targetSlot = 'ram_b2';
+    } else {
+      targetSlot = 'ram_a2';
+    }
+  }
+
+  // Izinkan upgrade PSU langsung bila PSU yang terpasang kurang daya (OCP overload)
+  const allowInstalledPsuUpgrade =
+    targetSlot === 'psu' &&
+    hasPart(state, 'psu') &&
+    (sku.psuCapacityWatts ?? 0) > getPsuCapacityWatts(state);
+
+  if (hasPart(state, targetSlot) && !allowInstalledPsuUpgrade) {
+    return {
+      ok: false,
+      sound: 'error',
+      state: {
+        ...state,
+        robotMood: 'thinking',
+        robotMessage: `${PARTS_BY_ID[targetSlot].shortName} sudah terpasang secara fisik di rakitan sehingga tidak bisa ditukar.`,
+      },
+    };
+  }
+
+  const previousSkuId = state.purchasedModules[targetSlot];
+  const previousRefund = previousSkuId ? (CATALOG_BY_SKU[previousSkuId]?.price ?? 0) : 0;
+  const netCost = sku.price - previousRefund;
+
+  if (state.balance < netCost) {
+    const shortfall = netCost - state.balance;
+    return {
+      ok: false,
+      sound: 'error',
+      state: {
+        ...state,
+        robotMood: 'warning',
+        robotMessage: `Saldo anggaran tidak cukup untuk membeli ${sku.model} (kurang ${formatRupiah(shortfall)}). Jual modul lain atau pilih seri yang lebih hemat.`,
+      },
+    };
+  }
+
+  const nextPurchased: Partial<Record<BuyableSlotId, string>> = {
+    ...state.purchasedModules,
+    [targetSlot]: sku.skuId,
+  };
+  const nextDamaged: Partial<Record<PartId, PartDamageInfo>> = { ...state.damagedParts };
+  delete nextDamaged[targetSlot];
+
+  return {
+    ok: true,
+    sound: 'shop_buy',
+    state: {
+      ...state,
+      balance: state.balance - netCost,
+      purchasedModules: nextPurchased,
+      damagedParts: nextDamaged,
+      postResult: null,
+      robotMood: 'happy',
+      robotMessage: allowInstalledPsuUpgrade
+        ? `PSU berhasil di-upgrade ke ${sku.model} (${sku.psuCapacityWatts} W)! Sekarang uji nyala POST kembali.`
+        : `${sku.model} dibeli untuk ${PARTS_BY_ID[targetSlot].shortName}. Sisa saldo: ${formatRupiah(state.balance - netCost)}.`,
+    },
+  };
+}
+
+export function buyDualChannelRamKit(state: AssemblyState, skuId: string): ActionOutcome {
+  const sku = CATALOG_BY_SKU[skuId];
+  if (!sku || sku.slotFamily !== 'ram_a2') {
+    return { ok: false, sound: 'error', state };
+  }
+  if (hasPart(state, 'ram_a2') || hasPart(state, 'ram_b2')) {
+    return {
+      ok: false,
+      sound: 'error',
+      state: {
+        ...state,
+        robotMood: 'thinking',
+        robotMessage: 'Salah satu atau kedua modul RAM sudah terpasang di motherboard.',
+      },
+    };
+  }
+
+  const refundA2 = state.purchasedModules.ram_a2
+    ? (CATALOG_BY_SKU[state.purchasedModules.ram_a2]?.price ?? 0)
+    : 0;
+  const refundB2 = state.purchasedModules.ram_b2
+    ? (CATALOG_BY_SKU[state.purchasedModules.ram_b2]?.price ?? 0)
+    : 0;
+  const netCost = sku.price * 2 - (refundA2 + refundB2);
+
+  if (state.balance < netCost) {
+    return {
+      ok: false,
+      sound: 'error',
+      state: {
+        ...state,
+        robotMood: 'warning',
+        robotMessage: `Saldo tidak cukup untuk paket 2 keping ${sku.model} (kurang ${formatRupiah(netCost - state.balance)}).`,
+      },
+    };
+  }
+
+  const nextPurchased: Partial<Record<BuyableSlotId, string>> = {
+    ...state.purchasedModules,
+    ram_a2: sku.skuId,
+    ram_b2: sku.skuId,
+  };
+
+  return {
+    ok: true,
+    sound: 'shop_buy',
+    state: {
+      ...state,
+      balance: state.balance - netCost,
+      purchasedModules: nextPurchased,
+      robotMood: 'happy',
+      robotMessage: `Paket Dual-Channel 2× ${sku.model} dibeli untuk slot A2 & B2! Sisa saldo: ${formatRupiah(state.balance - netCost)}.`,
+    },
+  };
+}
+
+export function sellCatalogModule(state: AssemblyState, slotId: BuyableSlotId): ActionOutcome {
+  const existingSkuId = state.purchasedModules[slotId];
+  if (!existingSkuId) {
+    return { ok: false, sound: null, state };
+  }
+  if (hasPart(state, slotId)) {
+    return {
+      ok: false,
+      sound: 'error',
+      state: {
+        ...state,
+        robotMood: 'warning',
+        robotMessage: `${PARTS_BY_ID[slotId].shortName} sudah terpasang di rakitan dan tidak dapat dijual kembali.`,
+      },
+    };
+  }
+
+  const sku = CATALOG_BY_SKU[existingSkuId];
+  const refund = sku?.price ?? 0;
+  const nextPurchased: Partial<Record<BuyableSlotId, string>> = { ...state.purchasedModules };
+  delete nextPurchased[slotId];
+
+  return {
+    ok: true,
+    sound: 'shop_sell',
+    state: {
+      ...state,
+      balance: state.balance + refund,
+      purchasedModules: nextPurchased,
+      selectedPart: state.selectedPart === slotId ? null : state.selectedPart,
+      robotMood: 'idle',
+      robotMessage: `${sku?.model ?? PARTS_BY_ID[slotId].shortName} dikembalikan ke toko (+${formatRupiah(refund)}).`,
+    },
+  };
+}
+
+export function autoFillRecommendedBuild(state: AssemblyState): ActionOutcome {
+  const order = CLIENT_ORDERS[state.orderId];
+  const nextPurchased: Partial<Record<BuyableSlotId, string>> = { ...state.purchasedModules };
+  let remainingBalance = state.balance;
+  let boughtCount = 0;
+
+  for (const slot of BUYABLE_SLOTS) {
+    if (nextPurchased[slot]) continue;
+    const recSkuId = order.recommendedLoadout[slot];
+    const sku = CATALOG_BY_SKU[recSkuId];
+    if (!sku) continue;
+    if (remainingBalance >= sku.price) {
+      nextPurchased[slot] = sku.skuId;
+      remainingBalance -= sku.price;
+      boughtCount += 1;
+    }
+  }
+
+  if (boughtCount === 0) {
+    const missing = BUYABLE_SLOTS.filter((slot) => !nextPurchased[slot]);
+    return {
+      ok: false,
+      sound: missing.length === 0 ? null : 'error',
+      state: {
+        ...state,
+        robotMood: missing.length === 0 ? 'happy' : 'warning',
+        robotMessage:
+          missing.length === 0
+            ? 'Semua 9 modul utama sudah kamu miliki! Kamu siap menuju Meja Rakit 3D.'
+            : 'Sisa saldo belum cukup untuk melengkapi modul yang tersisa secara otomatis. Coba tukar beberapa modul ke kelas yang lebih hemat.',
+      },
+    };
+  }
+
+  return {
+    ok: true,
+    sound: 'shop_buy',
+    state: {
+      ...state,
+      balance: remainingBalance,
+      purchasedModules: nextPurchased,
+      robotMood: 'happy',
+      robotMessage: `${boughtCount} modul rekomendasi berhasil dibeli sesuai spesifikasi "${order.title}". Sisa anggaran: ${formatRupiah(remainingBalance)}.`,
+    },
+  };
 }
 
 export function getAccuracyPercent(state: AssemblyState): number {
@@ -301,6 +675,16 @@ export function selectPart(state: AssemblyState, partId: PartId | null): Assembl
         spec.phase === 'case'
           ? `${spec.name} dipasang setelah kita pindah ke dalam casing ATX.`
           : `${spec.name} termasuk tahap persiapan motherboard.`,
+    };
+  }
+
+  if (!isPartOwned(state, partId)) {
+    return {
+      ...state,
+      selectedPart: null,
+      inspectedPart: partId,
+      robotMood: 'guiding',
+      robotMessage: `Kamu belum membeli ${spec.name}. Buka Toko Modul untuk memilih dan membeli komponen yang kamu inginkan terlebih dahulu.`,
     };
   }
 
@@ -478,6 +862,19 @@ export function installPartOnSlot(
   }
 
   const spec = PARTS_BY_ID[partId];
+
+  if (!isPartOwned(state, partId)) {
+    return {
+      ok: false,
+      sound: 'error',
+      state: {
+        ...state,
+        selectedPart: null,
+        robotMood: 'guiding',
+        robotMessage: `${spec.name} belum dibeli. Buka Toko Modul untuk membelinya terlebih dahulu sebelum dipasang.`,
+      },
+    };
+  }
 
   const existingDamage = state.damagedParts[partId];
   if (existingDamage) {
@@ -853,9 +1250,29 @@ export function runPostCheck(state: AssemblyState): ActionOutcome {
     );
   }
 
-  // Semua cek lolos! POST Sukses & BIOS menyala!
-  const preset = BUILD_PRESETS[state.buildPreset];
+  // Cek realistik kelebihan beban daya PSU (Over-Current Protection / OCP Trip)
   const totalWattage = getTotalWattage(state);
+  const psuCapacity = getPsuCapacityWatts(state);
+  if (totalWattage > psuCapacity) {
+    return fail(
+      null,
+      'Proteksi OCP (PSU Overload)',
+      'Daya PSU Tidak Mencukupi!',
+      `Total beban rakitan mencapai ${totalWattage} W sedangkan PSU hanya berkapasitas ${psuCapacity} W. Buka Toko Modul untuk meng-upgrade PSU ke daya lebih tinggi.`,
+    );
+  }
+
+  // Semua cek lolos! POST Sukses & BIOS menyala!
+  const cpuInfo = getEffectivePartInfo(state, 'cpu');
+  const gpuInfo = getEffectivePartInfo(state, 'gpu');
+  const ssdInfo = getEffectivePartInfo(state, 'ssd_nvme');
+  const psuSku = getPurchasedSku(state, 'psu');
+  const idleTempC = getEffectiveIdleTempC(state);
+  const ramModeLabel = getRamSummaryLabel(state);
+  const isGoldOrBetterPsu = psuSku
+    ? psuSku.psuEfficiencyTier === '80+ Gold' || psuSku.psuEfficiencyTier === '80+ Platinum'
+    : undefined;
+
   const earnedAchievements = evaluateRunAchievements({
     elapsedSeconds: state.elapsedSeconds,
     mistakes: state.mistakes,
@@ -864,6 +1281,8 @@ export function runPostCheck(state: AssemblyState): ActionOutcome {
     hintsUsed: state.hintsUsed,
     buildPreset: state.buildPreset,
     totalWattage,
+    psuCapacityWatts: psuCapacity,
+    isGoldOrBetterPsu,
     hasDualChannelRam: hasPart(state, 'ram_a2') && hasPart(state, 'ram_b2'),
     hasThermalPaste: hasPart(state, 'thermal_paste'),
   });
@@ -888,9 +1307,9 @@ export function runPostCheck(state: AssemblyState): ActionOutcome {
         faultLed: null,
         beepCode: '1 Beep Singkat (Normal)',
         headline: 'POST Berhasil! Sistem Masuk BIOS/UEFI',
-        explanation: `${preset.cpuModel}, RAM 32 GB DDR5 Dual-Channel, ${preset.gpuModel}, dan SSD NVMe 1 TB terdeteksi normal dengan suhu kerja ${preset.idleTempC}°C.`,
-        idleTempC: preset.idleTempC,
-        ramModeLabel: '32 GB DDR5-5600 (Dual-Channel)',
+        explanation: `${cpuInfo.model}, RAM ${ramModeLabel}, ${gpuInfo.model}, dan ${ssdInfo.model} terdeteksi normal dengan suhu kerja ${idleTempC}°C.`,
+        idleTempC,
+        ramModeLabel,
       },
       robotMood: 'celebrate',
       robotMessage: `Luar biasa! Satu bunyi beep singkat — POST lulus sempurna dengan ${earnedAchievements.length} lencana pencapaian (+${achievementBonus} poin bonus)!`,
